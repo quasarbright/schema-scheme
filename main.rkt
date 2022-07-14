@@ -61,14 +61,15 @@
 
 (begin-for-syntax
   (define-syntax-class core-schema
-    #:datum-literals (string number boolean null list-of object)
+    #:datum-literals (string number boolean null list-of object ?)
     #:description "core schema"
     (pattern string)
     (pattern number)
     (pattern boolean)
     (pattern null)
     (pattern (list-of ele:core-schema))
-    (pattern (object field:core-field ...)))
+    (pattern (object field:core-field ...))
+    (pattern (? test:expr)))
 
   (define-syntax-class core-field
     #:description "core object field"
@@ -108,6 +109,11 @@
            (values key (value-schema value))]))
       (error "expected an object" json)))
 
+(define ((#%?-schema test) json)
+  (if (test json)
+      json
+      (error "expected a value that passes a predicate" test json)))
+
 (define-syntax (core-schema->racket stx)
   (syntax-parse stx
     ; I don't want to repeat myself, but a literal set didn't seem to work
@@ -117,7 +123,8 @@
     [(_ string) #'#%string-schema]
     [(_ null) #'#%null-schema]
     [(_ (list-of ele-schema:core-schema)) #'(#%list-of-schema (core-schema->racket ele-schema))]
-    [(_ (object (field value-schema:core-schema) ...)) #'(#%object-schema (list (list 'field (core-schema->racket value-schema)) ...))]))
+    [(_ (object (field value-schema:core-schema) ...)) #'(#%object-schema (list (list 'field (core-schema->racket value-schema)) ...))]
+    [(_ (? test:expr)) #'(#%?-schema test)]))
 
 (module+ test
   (check-equal? ((core-schema->racket null) 'null) 'null)
@@ -127,9 +134,11 @@
   (check-equal? ((core-schema->racket (list-of number)) '()) '())
   (check-equal? ((core-schema->racket (list-of number)) '(1 2 3)) '(1 2 3))
   (check-equal? ((core-schema->racket (object (foo number))) (hasheq 'foo 1)) (hasheq 'foo 1))
+  (check-equal? ((core-schema->racket (? even?)) 2) 2)
   (check-exn exn:fail? (λ () ((core-schema->racket number) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) #t)))
-  (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) (list 1 2 #t)))))
+  (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) (list 1 2 #t))))
+  (check-exn exn:fail? (λ () ((core-schema->racket (? even?)) 3))))
 
 #;(define-syntax (define-schema stx)
     (syntax-parse stx ))
