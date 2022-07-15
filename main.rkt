@@ -40,7 +40,7 @@
 
 (begin-for-syntax
   (define-syntax-class core-schema
-    #:datum-literals (string number boolean null list-of object ?)
+    #:datum-literals (string number boolean null list-of object ? and)
     #:description "core schema"
     (pattern string)
     (pattern number)
@@ -49,7 +49,8 @@
     (pattern (list-of ele:core-schema))
     (pattern (object field:core-field ...))
     (pattern (? test:expr))
-    (pattern (and schema1:core-schema schema2:core-schema)))
+    (pattern (and schema1:core-schema schema2:core-schema))
+    (pattern name:id))
 
   (define-syntax-class core-field
     #:description "core object field"
@@ -101,7 +102,7 @@
 (define-syntax (core-schema->racket stx)
   (syntax-parse stx
     ; I don't want to repeat myself, but a literal set didn't seem to work
-    #:datum-literals (string number boolean null list-of object/schema)
+    #:datum-literals (string number boolean null list-of object/schema ? and)
     [(_ number) #'#%number-schema]
     [(_ boolean) #'#%boolean-schema]
     [(_ string) #'#%string-schema]
@@ -109,7 +110,15 @@
     [(_ (list-of ele-schema:core-schema)) #'(#%list-of-schema (core-schema->racket ele-schema))]
     [(_ (object (field value-schema:core-schema) ...)) #'(#%object-schema (list (list 'field (core-schema->racket value-schema)) ...))]
     [(_ (? test:expr)) #'(#%?-schema test)]
-    [(_ (and schema1:core-schema schema2:core-schema)) #'(#%and-schema (core-schema->racket schema1) (core-schema->racket schema2))]))
+    [(_ (and schema1:core-schema schema2:core-schema)) #'(#%and-schema (core-schema->racket schema1) (core-schema->racket schema2))]
+    [(_ name:id) #'name]))
+
+;; interface macros
+
+(define-syntax (define-schema stx)
+  ; TODO change to schema once that exists
+  (syntax-parse stx
+    [(_ name:id schema:core-schema) #'(define name (core-schema->racket schema))]))
 
 (define-syntax (validate-json stx)
   ; TODO change to schema once that exists
@@ -127,6 +136,9 @@
   (check-equal? ((core-schema->racket (? even?)) 2) 2)
   (check-equal? ((core-schema->racket (and number (? even?))) 2) 2)
   (check-equal? (validate-json (and number (? even?)) 2) 2)
+  (define-schema complex (object (im number) (rl number)))
+  (check-equal? (validate-json (and (? (const #t)) complex) (hasheq 'im 1 'rl 2)) (hasheq 'im 1 'rl 2))
+  ; TODO test recursion once "or" schemas are implemented
   (check-exn exn:fail? (λ () ((core-schema->racket number) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) (list 1 2 #t))))
