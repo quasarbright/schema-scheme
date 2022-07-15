@@ -118,7 +118,7 @@
 (define-syntax (define-schema stx)
   ; TODO change to schema once that exists
   (syntax-parse stx
-    [(_ name:id schema:core-schema) #'(define name (core-schema->racket schema))]))
+    [(_ name:id schema:core-schema) #'(define (name json) ((core-schema->racket schema) json))]))
 
 (define-syntax (validate-jsexpr stx)
   ; TODO change to schema once that exists
@@ -138,14 +138,18 @@
   (check-equal? (validate-jsexpr (and number (? even?)) 2) 2)
   (define-schema complex (object (im number) (rl number)))
   (check-equal? (validate-jsexpr (and (? (const #t)) complex) (hasheq 'im 1 'rl 2)) (hasheq 'im 1 'rl 2))
-  ; TODO test recursion once "or" schemas are implemented
+  (define-schema rose-tree (list-of rose-tree))
+  (check-equal? (validate-jsexpr rose-tree '(() () ((())))) '(() () ((()))))
   (check-exn exn:fail? (λ () ((core-schema->racket number) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) (list 1 2 #t))))
   (check-exn exn:fail? (λ () ((core-schema->racket (? even?)) 3)))
   (check-exn exn:fail? (λ () ((core-schema->racket (and (? even?) (? (const #t)))) 1)))
   (check-exn exn:fail? (λ () ((core-schema->racket (and (? (const #t)) (? even?))) 1)))
-  (check-exn exn:fail? (λ () ((core-schema->racket (and (? even?) (? even?))) 1))))
+  (check-exn exn:fail? (λ () ((core-schema->racket (and (? even?) (? even?))) 1)))
+  (check-exn exn:fail? (λ () (validate-jsexpr rose-tree '(() () (((1))))))))
+
+(define-schema rose-tree (list-of rose-tree))
 
 #;(define-syntax (define-schema stx)
     (syntax-parse stx ))
