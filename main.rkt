@@ -1,4 +1,4 @@
-#lang racket/base
+#lang racket
 
 (module+ test
   (require rackunit))
@@ -35,12 +35,7 @@
           | (object <field> ...)                                  object schema
 <field> := (<identifier> <schema>)                                object field
 |#
-(require ee-lib)
-(require ee-lib/define)
-(require syntax/parse (for-syntax syntax/parse))
-(require (for-syntax racket/base))
-(require (for-template racket/base))
-(require racket/match)
+(require (for-syntax syntax/parse))
 
 #;(define-literal-forms schema-literals "schema literal"
     (string number boolean null list-of object))
@@ -69,7 +64,8 @@
     (pattern null)
     (pattern (list-of ele:core-schema))
     (pattern (object field:core-field ...))
-    (pattern (? test:expr)))
+    (pattern (? test:expr))
+    (pattern (and schema1:core-schema schema2:core-schema)))
 
   (define-syntax-class core-field
     #:description "core object field"
@@ -114,6 +110,10 @@
       json
       (error "expected a value that passes a predicate" test json)))
 
+(define ((#%and-schema schema1 schema2) json)
+  (void (schema1 json))
+  (schema2 json))
+
 (define-syntax (core-schema->racket stx)
   (syntax-parse stx
     ; I don't want to repeat myself, but a literal set didn't seem to work
@@ -124,7 +124,13 @@
     [(_ null) #'#%null-schema]
     [(_ (list-of ele-schema:core-schema)) #'(#%list-of-schema (core-schema->racket ele-schema))]
     [(_ (object (field value-schema:core-schema) ...)) #'(#%object-schema (list (list 'field (core-schema->racket value-schema)) ...))]
-    [(_ (? test:expr)) #'(#%?-schema test)]))
+    [(_ (? test:expr)) #'(#%?-schema test)]
+    [(_ (and schema1:core-schema schema2:core-schema)) #'(#%and-schema (core-schema->racket schema1) (core-schema->racket schema2))]))
+
+(define-syntax (validate-json stx)
+  ; TODO change to schema once that exists
+  (syntax-parse stx
+    [(_ schema:core-schema json:expr) #'((core-schema->racket schema) json)]))
 
 (module+ test
   (check-equal? ((core-schema->racket null) 'null) 'null)
@@ -135,10 +141,15 @@
   (check-equal? ((core-schema->racket (list-of number)) '(1 2 3)) '(1 2 3))
   (check-equal? ((core-schema->racket (object (foo number))) (hasheq 'foo 1)) (hasheq 'foo 1))
   (check-equal? ((core-schema->racket (? even?)) 2) 2)
+  (check-equal? ((core-schema->racket (and number (? even?))) 2) 2)
+  (check-equal? (validate-json (and number (? even?)) 2) 2)
   (check-exn exn:fail? (λ () ((core-schema->racket number) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) (list 1 2 #t))))
-  (check-exn exn:fail? (λ () ((core-schema->racket (? even?)) 3))))
+  (check-exn exn:fail? (λ () ((core-schema->racket (? even?)) 3)))
+  (check-exn exn:fail? (λ () ((core-schema->racket (and (? even?) (? (const #t)))) 1)))
+  (check-exn exn:fail? (λ () ((core-schema->racket (and (? (const #t)) (? even?))) 1)))
+  (check-exn exn:fail? (λ () ((core-schema->racket (and (? even?) (? even?))) 1))))
 
 #;(define-syntax (define-schema stx)
     (syntax-parse stx ))
