@@ -120,7 +120,7 @@
   (syntax-parse stx
     [(_ name:id schema:core-schema) #'(define name (core-schema->racket schema))]))
 
-(define-syntax (validate-json stx)
+(define-syntax (validate-jsexpr stx)
   ; TODO change to schema once that exists
   (syntax-parse stx
     [(_ schema:core-schema json:expr) #'((core-schema->racket schema) json)]))
@@ -135,9 +135,9 @@
   (check-equal? ((core-schema->racket (object (foo number))) (hasheq 'foo 1)) (hasheq 'foo 1))
   (check-equal? ((core-schema->racket (? even?)) 2) 2)
   (check-equal? ((core-schema->racket (and number (? even?))) 2) 2)
-  (check-equal? (validate-json (and number (? even?)) 2) 2)
+  (check-equal? (validate-jsexpr (and number (? even?)) 2) 2)
   (define-schema complex (object (im number) (rl number)))
-  (check-equal? (validate-json (and (? (const #t)) complex) (hasheq 'im 1 'rl 2)) (hasheq 'im 1 'rl 2))
+  (check-equal? (validate-jsexpr (and (? (const #t)) complex) (hasheq 'im 1 'rl 2)) (hasheq 'im 1 'rl 2))
   ; TODO test recursion once "or" schemas are implemented
   (check-exn exn:fail? (λ () ((core-schema->racket number) #t)))
   (check-exn exn:fail? (λ () ((core-schema->racket (list-of number)) #t)))
