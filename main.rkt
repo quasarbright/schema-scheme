@@ -48,11 +48,12 @@
        (define/syntax-parse schema^ (expand-schema #'schema))
        #'(list-of schema^)]
       [(list schema ...)
-       (define/syntax-parse schemas^ (stx-map expand-schema #'(schema ...)))
-       (datum->syntax #'stx (cons #'list #'schemas^) #'stx)]
+       (define/syntax-parse (schema^ ...) (stx-map expand-schema #'(schema ...)))
+       #'(list schema^ ...)]
       [(object (name:id schema) ...)
-       (define/syntax-parse fields^ (stx-map (λ (field) (syntax-parse field [(name:id schema) (list #'name (expand-schema #'schema))])) #'((name schema) ...)))
-       (datum->syntax #'stx (cons #'object #'fields^) #'stx)]
+       ; name doesn't get expanded, it's just to avoid a conflict
+       (define/syntax-parse ((name^ schema^) ...) (stx-map (λ (field) (syntax-parse field [(name:id schema) (list #'name (expand-schema #'schema))])) #'((name schema) ...)))
+       #'(object (name^ schema^) ...)]
       [(and schema ...+)
        (define/syntax-parse (schema^ ...) (stx-map expand-schema #'(schema ...)))
        (foldl (λ (next and-rest) #`(and #,and-rest #,next))
