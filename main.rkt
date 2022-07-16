@@ -6,6 +6,19 @@
 (module+ test
   (require rackunit))
 
+(provide (for-syntax expand-schema)
+         define-schema
+         validate-json
+         string
+         number
+         boolean
+         null
+         list-of
+         list
+         object
+         and
+         ?)
+
 #|
 <racket-def> := ... | (define-schema <schema-id> <schema>)        interface macro
 <racket-expr> := ... | (validate-json <schema-id> <racket-expr>)  interface macro
@@ -24,6 +37,7 @@
 
 (define-literal-forms schema-literals "schema literals cannot be used in racket expressions"
   (string number boolean null list-of list object and ?))
+; This makes it so you can't use the normal and in racket exprs
 
 (begin-for-syntax
   (define/hygienic (expand-schema stx) #:expression
