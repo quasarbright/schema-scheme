@@ -31,14 +31,12 @@
   (define-literal-set schema-literals
     #:datum-literals (string number boolean null list-of list object and ?)
     ()))
-; This makes it so you can't use the normal and in racket exprs
 
 (begin-for-syntax
   (struct schema-ref [compiled-id] #:transparent)
   (define/hygienic (expand-schema stx) #:expression
     (syntax-parse stx
       #:literal-sets (schema-literals)
-      ; TODO unbound var just says bad syntax
       [schema-name:id #:when (lookup #'schema-name schema-ref?)
                       (schema-ref-compiled-id (lookup #'schema-name schema-ref?))]
       [string #'string]
@@ -64,7 +62,10 @@
        (define/syntax-parse test^ (local-expand #'test 'expression #f))
        #'(? test^)]
       [(? test:expr schema ...)
-       (expand-schema #'(and (? test) schema ...))])))
+       (expand-schema #'(and (? test) schema ...))]
+      [schema-name:id
+       ; unbound var
+       (raise-syntax-error #f "unbound schema reference" #'schema-name)])))
 
 ;; INTERFACE MACROS
 
