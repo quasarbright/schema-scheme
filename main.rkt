@@ -128,6 +128,8 @@
   (check-equal? (validate-json (list-of foo) '(1 2)) '(1 2))
   #;(define-schema rose (list-of rose))
   #;(check-equal? (validate-schema rose '(() () ((() ())))) '(() () ((() ()))))
+  ; shadow built-in
+  (check-equal? (local [(define-schema number boolean)] (validate-json number #t)) #t)
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
