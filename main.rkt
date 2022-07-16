@@ -34,12 +34,13 @@
 ; This makes it so you can't use the normal and in racket exprs
 
 (begin-for-syntax
+  (struct schema-ref [compiled-id] #:transparent)
   (define/hygienic (expand-schema stx) #:expression
     (syntax-parse stx
       #:literal-sets (schema-literals)
-      ; TODO this should be a special variable type, not racket-var
-      [schema-name:id #:when (lookup #'schema-name racket-var?)
-                      #'schema-name]
+      ; TODO unbound var just says bad syntax
+      [schema-name:id #:when (lookup #'schema-name schema-ref?)
+                      (schema-ref-compiled-id (lookup #'schema-name schema-ref?))]
       [string #'string]
       [number #'number]
       [boolean #'boolean]
@@ -72,7 +73,9 @@
     [(_ name:id schema)
      (define/syntax-parse schema^ (expand-schema #'schema))
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
-     #'(define (name json) (schema-compiled json))]))
+     #'(begin
+         (define (name-compiled json) (schema-compiled json))
+         (define-syntax name (schema-ref #'name-compiled)))]))
 
 (define-syntax (validate-json stx)
   (syntax-parse stx
@@ -119,6 +122,11 @@
   (check-equal? (validate-json (and (list-of number) (list number number)) '(1 2)) '(1 2))
   (check-equal? (validate-json (? even?) 2) 2)
   (check-equal? (validate-json (? list? (list-of number) (list number number)) '(1 2)) '(1 2))
+  (define-schema foo number)
+  (check-equal? (validate-json foo 1) 1)
+  (check-equal? (validate-json (list-of foo) '(1 2)) '(1 2))
+  #;(define-schema rose (list-of rose))
+  #;(check-equal? (validate-schema rose '(() () ((() ())))) '(() () ((() ()))))
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
