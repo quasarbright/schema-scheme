@@ -31,7 +31,7 @@
 ; define-literal-forms makes it so you can't use the literals in any racket expressions, so you can't use "list" or "and"
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (string number boolean null list-of list object and ? : when)
+    #:datum-literals (string number boolean null list-of list object and ? : when quote => cons)
     ()))
 
 (begin-for-syntax
@@ -148,7 +148,7 @@ might need to change hygeienic context to 'definition
 (define-syntax compile
   ; invariants:
   ; the generated code binds result-pv to the result of validating the schema
-  ; the generated code has all ":"-bound variables in scope at top-level, bound to the result(s) of validating its corresponding schema
+  ; the generated code has all ":"-bound variables in scope at top-level, bound to the result of validating its corresponding schema
   
   ; the whole thing compiles to a flat list of defines to implement scope properly
   (syntax-parser
@@ -228,3 +228,70 @@ might need to change hygeienic context to 'definition
   (check-exn exn:fail? (thunk (validate-json (object (foo number)) (hasheq 'bar 1))))
   (check-exn exn:fail? (thunk (validate-json (? odd?) 2)))
   (check-exn exn:fail? (thunk (validate-json (? odd? boolean) 1))))
+
+; experimenting on an alternative compiler for : and when
+
+; (minivalidate schema json) validate the json against the schema and returns the result of validation
+(define-syntax minivalidate
+  (syntax-parser
+    [(_ schema json:expr)
+     ; the empty let is here to introduce an internal definition context
+     ; I don't know of a more direct method to do this
+     #'(let ()
+         (define json-pv json)
+         (minivalidate* schema json-pv result-pv)
+         result-pv)]))
+
+; (minivalidate* schema json-pv result-pv) validates the json against the schema and binds the result to result-pv.
+; It also binds each ":"-bound variable to the result of validating its corresponding schema
+; invariants:
+; - the generated code binds result-pv to the result of validating the schema
+; - the generated code has all ":"-bound variables in scope at top-level, bound to the result of validating its corresponding schema
+; the whole thing compiles to a flat list of defines to implement scope properly
+(define-syntax minivalidate*
+  (syntax-parser
+    [(_ schema json-pv:id result-pv:id)
+     (syntax-parse #'schema
+       #:literal-sets (schema-literals)
+       ; honestly, schemas like number can and shouldn't be matched for
+       [schema-ref:id #:when (lookup #'schema-name schema-ref?)
+                      (define schema-proc-id (schema-ref-compiled-id (lookup #'schema-name schema-ref?)))
+                      #`(begin
+                          (define result-pv (#,schema-proc-id json-pv)))]
+       [number #'(begin
+                   (unless (number? json-pv) (error 'minivalidate "expected a number" json-pv))
+                   (define result-pv json-pv))]
+       [(quote datum)
+        #'(begin
+            (define qdatum-pv (quote datum))
+            (unless (equal? qdatum-pv json-pv) (error 'minivalidate "expected a particular value" qdatum-pv json-pv))
+            (define result-pv json-pv))]
+       [(cons first-schema rest-schema)
+        #'(begin
+            (unless (pair? json-pv) (error 'minivalidate "expected a non-empty list" json-pv))
+            (define first-json-pv (first json-pv))
+            (define rest-json-pv (rest json-pv))
+            (minivalidate* first-schema first-json-pv first-result-pv)
+            (minivalidate* rest-schema rest-json-pv rest-result-pv)
+            (define result-pv (cons first-result-pv rest-result-pv)))]
+       ; elided cases for string, boolean, null
+       [(: var:id inner-schema)
+        #'(begin
+            (minivalidate* inner-schema json-pv result-pv)
+            ; the (define result-pv ...) doesn't need to be the last statement. It is not shadowed 
+            (define var result-pv))]
+       [(when inner-schema test:expr)
+        #'(begin
+            (minivalidate* inner-schema json-pv result-pv)
+            (unless test (error 'minivalidate "when guard returned #f" 'test)))]
+       [(=> inner-schema action:expr)
+        #'(begin
+            (minivalidate* inner-schema json-pv ignored-pv)
+            (define result-pv action))])]))
+
+(module+ test
+  (check-equal? (minivalidate number 1) 1)
+  (check-equal? (minivalidate (cons number '()) '(1)) '(1))
+  (check-equal? (minivalidate (when (: x number) (even? x)) 2) 2)
+  (check-equal? (minivalidate (when (cons (: x number) '()) (even? x)) '(2)) '(2))
+  (check-equal? (minivalidate (=> (cons (: x number) (cons (: y number) '())) (list y x)) '(1 2)) '(2 1)))
