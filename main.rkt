@@ -21,6 +21,8 @@
           | (object <field> ...)                                  object schema
           | (? <expr> <schema> ...)                               predicate schema
           | (and <schema> ...)                                    and schema
+          | (: <identifier> <schema>)                             bind validation result
+          | (when <schema> <racket-expr>)                         conditional check using bound validation results
 <field> := (<identifier> <schema>)                                object field
 |#
 
@@ -29,7 +31,7 @@
 ; define-literal-forms makes it so you can't use the literals in any racket expressions, so you can't use "list" or "and"
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (string number boolean null list-of list object and ?)
+    #:datum-literals (string number boolean null list-of list object and ? : when)
     ()))
 
 (begin-for-syntax
@@ -92,6 +94,85 @@
 #;(-> jsexpr? any)
 ; returns the result of validating, usually just the json
 ; or throws an error
+
+#|
+(define-schema name schema)
+compiles to (define (name json) ...)
+so schema references compile to procedure applications, nothing fancy
+|#
+
+#;(define-schema name
+    (when (list (: x number))
+      (even? x)))
+#|
+when is checked
+  list is checked
+    : is checked
+      number is checked
+      result of number is bound to x
+  result of list is bound to when-result
+  test is ran
+  result of list is returned
+|#
+#;
+(define (name json)
+  (unless (list? json) (error))
+  (unless (<= 1 (length json)) (error))
+  (define first-json (first json))
+  (unless (number? first-json) (error))
+  (define number-result first-json)
+  (define x number-result)
+  (define list-result (list number-result))
+  (unless (even? x) (error))
+  (define when-result list-result)
+  when-result)
+#|
+hygiene should prevent accidental recursive definitions but it's still going to be tough
+could rely on an invariant like "the answer goes in RAX", or pass down some kind of on-success, whether that's a variable to bind to or a procedure
+might want to just compile to CPS
+
+It's going to be tough to get those bindings
+
+binding behavior of (list-of (: x number))?
+can't just naively bind to the whole list
+(list-of (when (:x number) (even? x)))
+ideally it'd be bound to the element inside and the list outside. That'd be hard to do though.
+bind to last occurrence?
+list-of creates a new scope? That's probably a good option for now
+try extending minimatch with a similar pattern
+"when" and semantic actions only at top-level and then bind to list? Then it's basically match with semantic actions in every pattern.
+
+might need to change hygeienic context to 'definition
+|#
+#;
+(define-syntax compile
+  ; invariants:
+  ; the generated code binds result-pv to the result of validating the schema
+  ; the generated code has all ":"-bound variables in scope at top-level, bound to the result(s) of validating its corresponding schema
+  
+  ; the whole thing compiles to a flat list of defines to implement scope properly
+  (syntax-parser
+    #:literals ...
+    [(_ number json-pv:id result-pv:id)
+     ; begins shouldn't be a problem because they just splice exprs in
+     #'(begin
+         (unless (number? json-pv) (error))
+         (define result-pv json-pv))]
+    ; just single-element list for now
+    ; to do multi-element, you might want to make a cons schema in core lol.
+    [(_ (list schema) json-pv:id result-pv:id)
+     #'(begin
+         (unless (list? json-pv) (error))
+         (unless (= 1 (length json-pv)) (error))
+         (define first-json-pv (first json-pv))
+         (compile schema first-json-pv first-result-pv)
+         (define result-pv:id (list first-result-pv)))]
+    [(_ (when schema expr:expr) json-pv:id result-pv:id)
+     #'(begin
+         (compile schema json-pv result-pv)
+         ; it's ok to have this after the final (define result-pv answer)
+         (unless expr (error)))]))
+
 
 (define-syntax (core-schema->racket stx)
   (syntax-parse stx
