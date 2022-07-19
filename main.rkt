@@ -20,11 +20,13 @@
           | (list <schema> ...)                                   list schema
           | (object <field> ...)                                  object schema
           | (? <expr> <schema> ...)                               predicate schema
-          | (and <schema> ...)                                    and schema
+          | (and <schema> ...+)                                   and schema
           | (: <identifier> <schema>)                             bind validation result
           | (when <schema> <racket-expr>)                         conditional check using bound validation results
 <field> := (<identifier> <schema>)                                object field
 |#
+
+; side note: allowing nested when and semantic actions leads to hard-to-read schemas
 
 ;; EXPANDER
 
@@ -274,7 +276,6 @@ might need to change hygeienic context to 'definition
             (minivalidate* first-schema first-json-pv first-result-pv)
             (minivalidate* rest-schema rest-json-pv rest-result-pv)
             (define result-pv (cons first-result-pv rest-result-pv)))]
-       ; elided cases for string, boolean, null
        [(: var:id inner-schema)
         #'(begin
             (minivalidate* inner-schema json-pv result-pv)
@@ -294,4 +295,25 @@ might need to change hygeienic context to 'definition
   (check-equal? (minivalidate (cons number '()) '(1)) '(1))
   (check-equal? (minivalidate (when (: x number) (even? x)) 2) 2)
   (check-equal? (minivalidate (when (cons (: x number) '()) (even? x)) '(2)) '(2))
-  (check-equal? (minivalidate (=> (cons (: x number) (cons (: y number) '())) (list y x)) '(1 2)) '(2 1)))
+  (check-equal? (minivalidate (=> (cons (: x number) (cons (: y number) '())) (list y x)) '(1 2)) '(2 1))
+  (check-equal? (minivalidate (=> (cons (: x (=> (: n number) (* 5 n))) (cons (: y number) '()))
+                                  (list x n y))
+                              '(3 7))
+                '(15 3 7))
+  ; side note: allowing nested when and semantic actions leads to hard-to-read schemas
+  (check-equal? (minivalidate (when (cons '1 (: after-1
+                                                (when (cons (: second-number number) '())
+                                                  (even? second-number))))
+                                (and (= 2 second-number) (equal? '(2) after-1))) '(1 2))
+                '(1 2))
+  (check-exn exn:fail?
+             (thunk (minivalidate (when (cons '1 (: after-1
+                                                    (when (cons (: second-number number) '())
+                                                      (even? second-number))))
+                                    (and (= 2 second-number) (equal? "something else" after-1))) '(1 2))))
+  ; it fails bc duplicate binding name
+  #;(check-equal? (minivalidate (=> (cons (: x number) (cons (: x number) '()))
+                                  x)
+                              '(1 2))
+                2)
+  #;(check-equal? (minivalidate (=> (: x (=> (: x (: y number)) (list x y))) (list x y)) '(1 2)) '((1 2) 2)))
