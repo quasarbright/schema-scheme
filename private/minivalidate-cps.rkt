@@ -19,6 +19,13 @@
       (on-success (car json) (cdr json))
       (on-fail)))
 
+#;(-> jsexpr? (-> any/c any/c) (-> (list-of any/c) any) (-> any))
+; maps proc over elements
+(define (validate-list-of json proc on-success on-fail)
+  (if (list? json)
+      (on-success (map proc json))
+      (on-fail)))
+
 (define-syntax validate*
   (syntax-parser
     ; on-success is a procedure that accepts the result of validation
@@ -26,7 +33,7 @@
     ; everything should compile to one huge lambda that ends up referencing things from outer lambdas
     [(_ schema json-pv:id on-success)
      (syntax-parse #'schema
-       #:datum-literals (list cons quote number => : when and or ?)
+       #:datum-literals (list cons quote number => : when and or ? list-of)
        [(: var:id inner-schema)
         #'(validate* inner-schema json-pv (λ (var) (on-success var)))]
        [(when inner-schema test:expr)
@@ -50,10 +57,17 @@
                                         (validate* rest-schema rest-json
                                                    (λ (rest-result)
                                                      (on-success (cons first-result rest-result)))))))
-                         (λ () (error 'validate "expected cons ~a" json-pv)))])]))
+                         (λ () (error 'validate "expected cons ~a" json-pv)))]
+       [(list-of element-schema)
+        #'(validate-list-of json-pv
+                            ; creates a new scope for captured variables
+                            (λ (element) (validate element-schema element))
+                            on-success
+                            (λ () (error 'validate "expected a list ~a" json-pv)))])]))
 
 (module+ test
   (check-equal? (validate (=> (cons (: a '1) (: b '(2))) (list a b)) '(1 2)) '(1 (2)))
   (check-equal? (validate (=> (cons (: a '1) (: a '(2))) a) '(1 2)) '(2))
   (check-equal? (validate (=> (: x (=> (cons (: x '1) (cons (: y '2) '())) (list x y))) (list x y)) '(1 2))
-                '((1 2) 2)))
+                '((1 2) 2))
+  (check-equal? (validate (list-of (=> (cons (: x '1) '()) x)) '((1) (1))) '(1 1)))
