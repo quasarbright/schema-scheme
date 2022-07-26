@@ -8,7 +8,34 @@
          #%list-schema
          #%object-schema
          #%?-schema
-         #%and-schema)
+         #%and-schema
+         #;(-> any/c (-> any/c any/c any) (-> any))
+         #;(validate-cons json on-success on-fail)
+         ; validate that `json` is a cons cell and call `on-success` with first and rest, or `(on-fail)` otherwise
+         validate-cons
+         #;(-> any/c any/c (-> any/c any) (-> any))
+         #;(validate-object-field json key on-success on-fail)
+         ; validate that `json` is an object with a field `key` and call `on-success` with its value, or `(on-fail)` otherwise
+         validate-object-field
+         #;(-> any/c (-> any/c any/c) (-> (list-of any/c) any) (-> any))
+         #;(validate-list-of json proc on-success on-fail)
+         ; validate that `json` is a list and map `proc` over each element. Call `on-success` with the resulting list, or `(on-fail)` otherwise
+         validate-list-of)
+
+(define (validate-cons json on-success on-fail)
+  (if (cons? json)
+      (on-success (car json) (cdr json))
+      (on-fail)))
+
+(define (validate-object-field json key on-success on-fail)
+  (if (and (hash? json) (hash-has-key? json key))
+      (on-success (hash-ref json key))
+      (on-fail)))
+
+(define (validate-list-of json proc on-success on-fail)
+  (if (list? json)
+      (on-success (map proc json))
+      (on-fail)))
 
 (define (#%number-schema json)
   (if (number? json)

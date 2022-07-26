@@ -33,40 +33,60 @@
 ; define-literal-forms makes it so you can't use the literals in any racket expressions, so you can't use "list" or "and"
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (string number boolean null list-of list object and ? : when quote => cons)
+    #:datum-literals (string number boolean null list-of list object and ? : when quote => cons object-has-field any)
     ()))
 
 (begin-for-syntax
   (struct schema-ref [compiled-id] #:transparent)
-  (define/hygienic (expand-schema stx) #:expression
+  (define/hygienic (expand-schema stx) #:definition
     (syntax-parse stx
       #:literal-sets (schema-literals)
       [schema-name:id #:when (lookup #'schema-name schema-ref?)
                       (schema-ref-compiled-id (lookup #'schema-name schema-ref?))]
-      [string #'string]
-      [number #'number]
-      [boolean #'boolean]
-      [null #'null]
       [(list-of schema)
-       (define/syntax-parse schema^ (expand-schema #'schema))
-       #'(list-of schema^)]
+       (with-scope sc
+         (define/syntax-parse schema^ (expand-schema (add-scope #'schema sc)))
+         #'(list-of schema^))]
       [(list schema ...)
-       (define/syntax-parse (schema^ ...) (stx-map expand-schema #'(schema ...)))
-       #'(list schema^ ...)]
+       (expand-schema
+        (foldr (λ (first-schema rest-schema) #`(cons #,first-schema #,rest-schema))
+               #'(=> (: empty any) (if (equal? '() empty) '() (error 'validate-json "expected ~a, got ~a" '() empty)))
+               (syntax->list #'(schema ...))))]
+      [(cons first-schema rest-schema)
+       #`(cons #,(expand-schema #'first-schema) #,(expand-schema #'rest-schema))]
       [(object (name:id schema) ...)
-       ; name doesn't get expanded, it's just to avoid a conflict
-       (define/syntax-parse ((name^ schema^) ...) (stx-map (λ (field) (syntax-parse field [(name:id schema) (list #'name (expand-schema #'schema))])) #'((name schema) ...)))
-       #'(object (name^ schema^) ...)]
-      [(and schema ...+)
-       (define/syntax-parse (schema^ ...) (stx-map expand-schema #'(schema ...)))
-       (foldl (λ (next and-rest) #`(and #,and-rest #,next))
-              (expand-schema #'(? (const #t)))
-              (syntax->list #'(schema^ ...)))]
+       (expand-schema #'(=> (and (=> (: obj any) (if (hash? obj) obj (error 'validate-json "expected object, got ~a" obj)))
+                                 (object-has-field name (: name schema))
+                                 ...)
+                            (make-immutable-hasheq (list (cons 'name name) ...))))]
+      [(object-has-field name:id schema)
+       #`(object-has-field name #,(expand-schema #'schema))]
+      [(and schema1 schema2)
+       #`(and #,(expand-schema #'schema1) #,(expand-schema #'schema2))]
+      [(and schema ...)
+       (expand-schema
+        (foldl (λ (next and-rest) #`(and #,and-rest #,next))
+              #'any
+              (syntax->list #'(schema ...))))]
       [(? test:expr)
        (define/syntax-parse test^ (local-expand #'test 'expression #f))
-       #'(? test^)]
+       #'(when (: json any) (test^ json))]
       [(? test:expr schema ...)
        (expand-schema #'(and (? test) schema ...))]
+      [(=> schema body)
+       (define/syntax-parse schema^ (expand-schema #'schema))
+       (define/syntax-parse body^ (local-expand #'body 'expression #f))
+       #'(=> schema^ body^)]
+      [(: name:id schema)
+       (define/syntax-parse schema^ (expand-schema #'schema))
+       (define/syntax-parse name^ (bind! #'name (racket-var)))
+       #'(: name^ schema^)]
+      [(when schema body)
+       (define/syntax-parse schema^ (expand-schema #'schema))
+       (define/syntax-parse body^ (local-expand #'body 'expression #f))
+       #'(when schema^ body^)]
+      ; special case
+      [any #'any]
       [schema-name:id
        ; unbound var
        (raise-syntax-error #f "unbound schema reference" #'schema-name)])))
@@ -76,7 +96,8 @@
 (define-syntax (define-schema stx)
   (syntax-parse stx
     [(_ name:id schema)
-     (define/syntax-parse schema^ (expand-schema #'schema))
+     ; single scope for whole schema
+     (define/syntax-parse schema^ (with-scope sc (expand-schema (add-scope #'schema sc))))
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
      #'(begin
          (define (name-compiled json) (schema-compiled json))
@@ -85,7 +106,7 @@
 (define-syntax (validate-json stx)
   (syntax-parse stx
     [(_ schema json:expr)
-     (define/syntax-parse schema^ (expand-schema #'schema))
+     (define/syntax-parse schema^ (with-scope sc (expand-schema (add-scope #'schema sc))))
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
      (define/syntax-parse json^ (local-expand #'json 'expression '()))
      #'(schema-compiled json^)]))
@@ -176,6 +197,7 @@ might need to change hygeienic context to 'definition
          (unless expr (error)))]))
 
 
+#;
 (define-syntax (core-schema->racket stx)
   (syntax-parse stx
     #:literal-sets (schema-literals)
@@ -189,6 +211,56 @@ might need to change hygeienic context to 'definition
     [(_ (and schema1 schema2)) #'(#%and-schema (core-schema->racket schema1) (core-schema->racket schema2))]
     [(_ (list schema ...)) #'(#%list-schema (list (core-schema->racket schema) ...))]
     [(_ name:id) #'name]))
+
+(define-syntax core-schema->racket
+  (syntax-parser
+    [(_ schema) #'(λ (json-v) (validate-core schema json-v result-v result-v))]))
+
+(define-syntax validate-core
+  (syntax-parser
+    ; validates the json against the schema, binds the result to result-v and returns the result of evaluating body
+    [(_ schema json-v:id result-v:id body:expr)
+     (syntax-parse #'schema
+       #:literal-sets (schema-literals)
+       [(: var:id inner-schema)
+        #'(validate-core inner-schema json-v var (let ([result-v var]) body))]
+       [(when inner-schema guard:expr)
+        #'(validate-core inner-schema json-v result-v (if guard body (error 'validate "when guard evaluated to #f")))]
+       [(=> inner-schema =>-body:expr)
+        #'(validate-core inner-schema json-v ignored-v (let ([result-v =>-body]) body))]
+       [any #'(let ([result-v json-v]) body)]
+       [(cons first-schema rest-schema)
+        #'(validate-cons json-v
+                         (λ (first-v rest-v)
+                                  (validate-core first-schema first-v first-result-v
+                                                 (validate-core rest-schema rest-v rest-result-v
+                                                                (let ([result-v (cons first-result-v rest-result-v)])
+                                                                  body))))
+                         (λ () (error 'validate-json "expected cons, got ~a" json-v)))]
+       [(list-of element-schema)
+        #'(validate-list-of json-v
+                            (λ (element) (validate-core element-schema element element-result-v element-result-v))
+                            (λ (result-v) body)
+                            (λ () (error 'validate-json "expected a list, got ~a" json-v)))]
+       [(object-has-field field-name:id field-schema)
+        #'(validate-object-field json-v
+                                 'field-name
+                                 (λ (field-result-v) (validate-core field-schema field-result-v result-v body))
+                                 (λ () (error 'validate-json "expected an object with a field ~a, got ~a" 'field-name json-v)))]
+       [(and schema1 schema2)
+        #'(validate-core schema1 json-v ignored-v (validate-core schema2 json-v result-v body))]
+       ; schemas are compiled to (-> any/c any) procedures
+       [schema-ref:id #'(let ([result-v (schema-ref json-v)]) body)])]))
+
+; a private helper for defining atomic schemas in terms of other schemas
+(define-syntax-rule
+  (define-atomic-schema name predicate description)
+  (define-schema name (=> (: json any) (if (predicate json) json (error 'validate-json "expected ~a, got ~a" description json)))))
+
+(define-atomic-schema number number? "a number")
+(define-atomic-schema boolean boolean? "a boolean")
+(define-atomic-schema string string? "a string")
+(define-atomic-schema null (λ (json) (equal? json 'null)) "null")
 
 (module+ test
   ; you can still use functions like "and" and "list"
