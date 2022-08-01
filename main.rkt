@@ -23,14 +23,14 @@
           | (and <schema> ...+)                                   and schema
           | (: <identifier> <schema>)                             bind validation result
           | (when <schema> <racket-expr>)                         conditional check using bound validation results
+          | (=> <schema> <racket-expr>)                           semantic action
 <field> := (<identifier> <schema>)                                object field
 |#
-
-; side note: allowing nested when and semantic actions leads to hard-to-read schemas
 
 ;; EXPANDER
 
 ; define-literal-forms makes it so you can't use the literals in any racket expressions, so you can't use "list" or "and"
+; binding spaces might solve this problem, but it'd create some other ones, like with higher order schemas.
 (begin-for-syntax
   (define-literal-set schema-literals
     #:datum-literals (string number boolean null list-of list object and ? : when quote => cons object-has-field any)
@@ -118,100 +118,6 @@
 ; returns the result of validating, usually just the json
 ; or throws an error
 
-#|
-(define-schema name schema)
-compiles to (define (name json) ...)
-so schema references compile to procedure applications, nothing fancy
-|#
-
-#;(define-schema name
-    (when (list (: x number))
-      (even? x)))
-#|
-when is checked
-  list is checked
-    : is checked
-      number is checked
-      result of number is bound to x
-  result of list is bound to when-result
-  test is ran
-  result of list is returned
-|#
-#;
-(define (name json)
-  (unless (list? json) (error))
-  (unless (<= 1 (length json)) (error))
-  (define first-json (first json))
-  (unless (number? first-json) (error))
-  (define number-result first-json)
-  (define x number-result)
-  (define list-result (list number-result))
-  (unless (even? x) (error))
-  (define when-result list-result)
-  when-result)
-#|
-hygiene should prevent accidental recursive definitions but it's still going to be tough
-could rely on an invariant like "the answer goes in RAX", or pass down some kind of on-success, whether that's a variable to bind to or a procedure
-might want to just compile to CPS
-
-It's going to be tough to get those bindings
-
-binding behavior of (list-of (: x number))?
-can't just naively bind to the whole list
-(list-of (when (:x number) (even? x)))
-ideally it'd be bound to the element inside and the list outside. That'd be hard to do though.
-bind to last occurrence?
-list-of creates a new scope? That's probably a good option for now
-try extending minimatch with a similar pattern
-"when" and semantic actions only at top-level and then bind to list? Then it's basically match with semantic actions in every pattern.
-
-might need to change hygeienic context to 'definition
-|#
-#;
-(define-syntax compile
-  ; invariants:
-  ; the generated code binds result-pv to the result of validating the schema
-  ; the generated code has all ":"-bound variables in scope at top-level, bound to the result of validating its corresponding schema
-  
-  ; the whole thing compiles to a flat list of defines to implement scope properly
-  (syntax-parser
-    #:literals ...
-    [(_ number json-pv:id result-pv:id)
-     ; begins shouldn't be a problem because they just splice exprs in
-     #'(begin
-         (unless (number? json-pv) (error))
-         (define result-pv json-pv))]
-    ; just single-element list for now
-    ; to do multi-element, you might want to make a cons schema in core lol.
-    [(_ (list schema) json-pv:id result-pv:id)
-     #'(begin
-         (unless (list? json-pv) (error))
-         (unless (= 1 (length json-pv)) (error))
-         (define first-json-pv (first json-pv))
-         (compile schema first-json-pv first-result-pv)
-         (define result-pv:id (list first-result-pv)))]
-    [(_ (when schema expr:expr) json-pv:id result-pv:id)
-     #'(begin
-         (compile schema json-pv result-pv)
-         ; it's ok to have this after the final (define result-pv answer)
-         (unless expr (error)))]))
-
-
-#;
-(define-syntax (core-schema->racket stx)
-  (syntax-parse stx
-    #:literal-sets (schema-literals)
-    [(_ number) #'#%number-schema]
-    [(_ boolean) #'#%boolean-schema]
-    [(_ string) #'#%string-schema]
-    [(_ null) #'#%null-schema]
-    [(_ (list-of ele-schema)) #'(#%list-of-schema (core-schema->racket ele-schema))]
-    [(_ (object (field value-schema) ...)) #'(#%object-schema (list (list 'field (core-schema->racket value-schema)) ...))]
-    [(_ (? test:expr)) #'(#%?-schema test)]
-    [(_ (and schema1 schema2)) #'(#%and-schema (core-schema->racket schema1) (core-schema->racket schema2))]
-    [(_ (list schema ...)) #'(#%list-schema (list (core-schema->racket schema) ...))]
-    [(_ name:id) #'name]))
-
 (define-syntax core-schema->racket
   (syntax-parser
     [(_ schema) #'(λ (json-v) (validate-core schema json-v result-v result-v))]))
@@ -285,6 +191,27 @@ might need to change hygeienic context to 'definition
   #;(check-equal? (validate-schema rose '(() () ((() ())))) '(() () ((() ()))))
   ; shadow built-in
   (check-equal? (local [(define-schema number boolean)] (validate-json number #t)) #t)
+  (check-equal? (validate-json (list number) '(1)) '(1))
+  (check-equal? (validate-json (when (: x number) (even? x)) 2) 2)
+  (check-equal? (validate-json (when (list (: x number)) (even? x)) '(2)) '(2))
+  (check-equal? (validate-json (=> (list (: x number)  (: y number)) (list y x)) '(1 2)) '(2 1))
+  (check-equal? (validate-json (=> (list (: x (=> (: n number) (* 5 n)))  (: y number))
+                                  (list x n y))
+                              '(3 7))
+                '(15 3 7))
+  ; side note: allowing nested when and semantic actions leads to hard-to-read schemas
+  (check-equal? (validate-json (when (cons (? (λ (v) (= v 1)))
+                                           (: after-1
+                                              (when (cons (: second-number number) (list))
+                                                (even? second-number))))
+                                (and (= 2 second-number) (equal? '(2) after-1))) '(1 2))
+                '(1 2))
+  ; shadowing doesn't work, I assume because bind! prevents shadowing with the same scopes
+  #;(check-equal? (validate-json (=> (list (: x number) (: x number))
+                                  x)
+                              '(1 2))
+                2)
+  #;(check-equal? (validate-json (=> (: x (=> (: x (: y number)) (list x y))) (list x y)) '(1 2)) '((1 2) 2))
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
@@ -301,91 +228,11 @@ might need to change hygeienic context to 'definition
   (check-exn exn:fail? (thunk (validate-json (object (foo number)) (hasheq 'foo #t))))
   (check-exn exn:fail? (thunk (validate-json (object (foo number)) (hasheq 'bar 1))))
   (check-exn exn:fail? (thunk (validate-json (? odd?) 2)))
-  (check-exn exn:fail? (thunk (validate-json (? odd? boolean) 1))))
-
-; experimenting on an alternative compiler for : and when
-
-; (minivalidate schema json) validate the json against the schema and returns the result of validation
-(define-syntax minivalidate
-  (syntax-parser
-    [(_ schema json:expr)
-     ; the empty let is here to introduce an internal definition context
-     ; I don't know of a more direct method to do this
-     #'(let ()
-         (define json-pv json)
-         (minivalidate* schema json-pv result-pv)
-         result-pv)]))
-
-; (minivalidate* schema json-pv result-pv) validates the json against the schema and binds the result to result-pv.
-; It also binds each ":"-bound variable to the result of validating its corresponding schema
-; invariants:
-; - the generated code binds result-pv to the result of validating the schema
-; - the generated code has all ":"-bound variables in scope at top-level, bound to the result of validating its corresponding schema
-; the whole thing compiles to a flat list of defines to implement scope properly
-(define-syntax minivalidate*
-  (syntax-parser
-    [(_ schema json-pv:id result-pv:id)
-     (syntax-parse #'schema
-       #:literal-sets (schema-literals)
-       ; honestly, schemas like number can and shouldn't be matched for
-       [schema-ref:id #:when (lookup #'schema-name schema-ref?)
-                      (define schema-proc-id (schema-ref-compiled-id (lookup #'schema-name schema-ref?)))
-                      #`(begin
-                          (define result-pv (#,schema-proc-id json-pv)))]
-       [number #'(begin
-                   (unless (number? json-pv) (error 'minivalidate "expected a number" json-pv))
-                   (define result-pv json-pv))]
-       [(quote datum)
-        #'(begin
-            (define qdatum-pv (quote datum))
-            (unless (equal? qdatum-pv json-pv) (error 'minivalidate "expected a particular value" qdatum-pv json-pv))
-            (define result-pv json-pv))]
-       [(cons first-schema rest-schema)
-        #'(begin
-            (unless (pair? json-pv) (error 'minivalidate "expected a non-empty list" json-pv))
-            (define first-json-pv (first json-pv))
-            (define rest-json-pv (rest json-pv))
-            (minivalidate* first-schema first-json-pv first-result-pv)
-            (minivalidate* rest-schema rest-json-pv rest-result-pv)
-            (define result-pv (cons first-result-pv rest-result-pv)))]
-       [(: var:id inner-schema)
-        #'(begin
-            (minivalidate* inner-schema json-pv result-pv)
-            ; the (define result-pv ...) doesn't need to be the last statement. It is not shadowed 
-            (define var result-pv))]
-       [(when inner-schema test:expr)
-        #'(begin
-            (minivalidate* inner-schema json-pv result-pv)
-            (unless test (error 'minivalidate "when guard returned #f" 'test)))]
-       [(=> inner-schema action:expr)
-        #'(begin
-            (minivalidate* inner-schema json-pv ignored-pv)
-            (define result-pv action))])]))
-
-(module+ test
-  (check-equal? (minivalidate number 1) 1)
-  (check-equal? (minivalidate (cons number '()) '(1)) '(1))
-  (check-equal? (minivalidate (when (: x number) (even? x)) 2) 2)
-  (check-equal? (minivalidate (when (cons (: x number) '()) (even? x)) '(2)) '(2))
-  (check-equal? (minivalidate (=> (cons (: x number) (cons (: y number) '())) (list y x)) '(1 2)) '(2 1))
-  (check-equal? (minivalidate (=> (cons (: x (=> (: n number) (* 5 n))) (cons (: y number) '()))
-                                  (list x n y))
-                              '(3 7))
-                '(15 3 7))
-  ; side note: allowing nested when and semantic actions leads to hard-to-read schemas
-  (check-equal? (minivalidate (when (cons '1 (: after-1
-                                                (when (cons (: second-number number) '())
-                                                  (even? second-number))))
-                                (and (= 2 second-number) (equal? '(2) after-1))) '(1 2))
-                '(1 2))
+  (check-exn exn:fail? (thunk (validate-json (? odd? boolean) 1)))
+  (check-equal? (validate-json number 1) 1)
   (check-exn exn:fail?
-             (thunk (minivalidate (when (cons '1 (: after-1
-                                                    (when (cons (: second-number number) '())
-                                                      (even? second-number))))
-                                    (and (= 2 second-number) (equal? "something else" after-1))) '(1 2))))
-  ; it fails bc duplicate binding name
-  #;(check-equal? (minivalidate (=> (cons (: x number) (cons (: x number) '()))
-                                  x)
-                              '(1 2))
-                2)
-  #;(check-equal? (minivalidate (=> (: x (=> (: x (: y number)) (list x y))) (list x y)) '(1 2)) '((1 2) 2)))
+             (thunk (validate-json (when (cons (? (λ (v) (= v 1)))
+                                               (: after-1
+                                                  (when (cons (: second-number number) (list))
+                                                    (even? second-number))))
+                                    (and (= 2 second-number) (equal? "something else" after-1))) '(1 2)))))
