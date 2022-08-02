@@ -33,7 +33,7 @@
 ; binding spaces might solve this problem, but it'd create some other ones, like with higher order schemas.
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (string number boolean null list-of list object and ? : when quote => cons object-has-field any equal?)
+    #:datum-literals (list-of list object and : when quote => cons object-has-field any equal?)
     ()))
 
 (begin-for-syntax
@@ -54,6 +54,7 @@
          (define/syntax-parse schema^ (expand-schema (add-scope #'schema sc)))
          #'(list-of schema^))]
       [(list schema ...)
+       ; this should be a macro, but it would shadow the actual list function
        (expand-schema
         (foldr (λ (first-schema rest-schema) #`(cons #,first-schema #,rest-schema))
                #'(=> (: empty any) (if (equal? '() empty) '() (error 'validate-json "expected ~a, got ~a" '() empty)))
@@ -84,11 +85,6 @@
         (foldl (λ (next and-rest) #`(and #,and-rest #,next))
               #'any
               (syntax->list #'(schema ...))))]
-      [(? test:expr)
-       (define/syntax-parse test^ (local-expand #'test 'expression #f))
-       #'(when (: json any) (test^ json))]
-      [(? test:expr schema ...)
-       (expand-schema #'(and (? test) schema ...))]
       [(=> schema body)
        (define/syntax-parse schema^ (expand-schema #'schema))
        (define/syntax-parse body^ (local-expand #'body 'expression #f))
@@ -106,8 +102,9 @@
       [schema-name:id
        ; unbound var
        (raise-syntax-error #f "unbound schema reference" #'schema-name)]
-      ; uncomment this if/when you do first-class schemas
-      #;[(rator:expr rand:expr ...) ???])))
+      [(macro-name:id rest ...)
+       ; unbound macro
+       (raise-syntax-error #f "unbound variable reference" #'macro-name)])))
 
 ;; INTERFACE MACROS
 
@@ -186,6 +183,8 @@
        ; schemas are compiled to (-> any/c any) procedures
        [schema-ref:id #'(let ([result-v (schema-ref json-v)]) body)])]))
 
+;; BUILT-IN SCHEMAS
+
 ; a private helper for defining atomic schemas in terms of other schemas
 (define-syntax-rule
   (define-atomic-schema name predicate description)
@@ -195,6 +194,18 @@
 (define-atomic-schema boolean boolean? "a boolean")
 (define-atomic-schema string string? "a string")
 (define-atomic-schema null (λ (json) (equal? json 'null)) "null")
+
+;; BUILT-IN SCHEMA MACROS
+
+(define-schema-syntax object-bind
+  (syntax-parser
+    [(_ [name (~optional schema #:defaults ([schema #'any]))] ...)
+     #'(object [name (: name schema)] ...)]))
+
+(define-schema-syntax ?
+  (syntax-parser
+    [(_ test) #'(when (: json any) (test json))]
+    [(_ test schema ...) #'(and (? test) schema ...)]))
 
 (module+ test
   ; you can still use functions like "and" and "list"
@@ -261,6 +272,8 @@
     (check-equal? (validate-json (mylist number boolean null) '(1 #t null)) '(1 #t null)))
   (check-equal? (validate-json '(1 2 3) '(1 2 3)) '(1 2 3))
   (check-equal? (validate-json (equal? (list 1 2 3)) '(1 2 3)) '(1 2 3))
+  ; currently fails bc object creates non-hygienic bindings for field names
+  #;(check-equal? (validate-json (=> (object-bind [x number] [y]) (list x y)) (hasheqv 'x 1 'y 'null)) '(1 null))
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
@@ -287,3 +300,4 @@
                                     (and (= 2 second-number) (equal? "something else" after-1))) '(1 2))))
   (check-exn exn:fail? (thunk (validate-json '(1 2 3) '())))
   (check-exn exn:fail? (thunk (validate-json (equal? (list 1 2 3)) '()))))
+
