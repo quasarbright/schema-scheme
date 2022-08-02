@@ -33,7 +33,7 @@
 ; binding spaces might solve this problem, but it'd create some other ones, like with higher order schemas.
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list object and : when quote => cons object-has-field any equal?)
+    #:datum-literals (list-of list and : when quote => cons object-has-field any equal?)
     ()))
 
 (begin-for-syntax
@@ -71,11 +71,6 @@
                    (error 'validate-json "expected ~a, got ~a" expected-pv v)))))]
       [(cons first-schema rest-schema)
        #`(cons #,(expand-schema #'first-schema) #,(expand-schema #'rest-schema))]
-      [(object (name:id schema) ...)
-       (expand-schema #'(=> (and (=> (: obj any) (if (hash? obj) obj (error 'validate-json "expected object, got ~a" obj)))
-                                 (object-has-field name (: name schema))
-                                 ...)
-                            (make-immutable-hasheq (list (cons 'name name) ...))))]
       [(object-has-field name:id schema)
        #`(object-has-field name #,(expand-schema #'schema))]
       [(and schema1 schema2)
@@ -197,6 +192,15 @@
 
 ;; BUILT-IN SCHEMA MACROS
 
+(define-schema-syntax object
+  (syntax-parser
+    [(object (name:id (~optional schema #:defaults ([schema #'any]))) ...)
+     (define/syntax-parse (name^ ...) (generate-temporaries #'(name ...)))
+     #'(=> (and (=> (: obj any) (if (hash? obj) obj (error 'validate-json "expected object, got ~a" obj)))
+                (object-has-field name (: name^ schema))
+                ...)
+           (make-immutable-hasheq (list (cons 'name name^) ...)))]))
+
 (define-schema-syntax object-bind
   (syntax-parser
     [(_ [name (~optional schema #:defaults ([schema #'any]))] ...)
@@ -272,8 +276,9 @@
     (check-equal? (validate-json (mylist number boolean null) '(1 #t null)) '(1 #t null)))
   (check-equal? (validate-json '(1 2 3) '(1 2 3)) '(1 2 3))
   (check-equal? (validate-json (equal? (list 1 2 3)) '(1 2 3)) '(1 2 3))
-  ; currently fails bc object creates non-hygienic bindings for field names
-  #;(check-equal? (validate-json (=> (object-bind [x number] [y]) (list x y)) (hasheqv 'x 1 'y 'null)) '(1 null))
+  (check-equal? (validate-json (=> (object-bind [x number] [y]) (list x y)) (hasheqv 'x 1 'y 'null)) '(1 null))
+  ; shadow built-in with macro
+  (local [(define-schema-syntax : (syntax-parser [(_ rest ...) #'number]))] (check-equal? (validate-json (:) 1) 1))
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
