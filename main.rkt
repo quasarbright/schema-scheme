@@ -33,7 +33,7 @@
 ; binding spaces might solve this problem, but it'd create some other ones, like with higher order schemas.
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (string number boolean null list-of list object and ? : when quote => cons object-has-field any)
+    #:datum-literals (string number boolean null list-of list object and ? : when quote => cons object-has-field any equal?)
     ()))
 
 (begin-for-syntax
@@ -58,6 +58,16 @@
         (foldr (λ (first-schema rest-schema) #`(cons #,first-schema #,rest-schema))
                #'(=> (: empty any) (if (equal? '() empty) '() (error 'validate-json "expected ~a, got ~a" '() empty)))
                (syntax->list #'(schema ...))))]
+      [(quote datum)
+       (expand-schema #'(equal? (quote datum)))]
+      [(equal? expected)
+       ; don't pull this out into a macro because quote depends on it
+       (expand-schema
+        #'(=> (: v any)
+             (let ([expected-pv expected])
+               (if (equal? v expected-pv)
+                   v
+                   (error 'validate-json "expected ~a, got ~a" expected-pv v)))))]
       [(cons first-schema rest-schema)
        #`(cons #,(expand-schema #'first-schema) #,(expand-schema #'rest-schema))]
       [(object (name:id schema) ...)
@@ -249,6 +259,8 @@
               [(_ schema0 schema ...)
                #'(cons schema0 (mylist schema ...))]))]
     (check-equal? (validate-json (mylist number boolean null) '(1 #t null)) '(1 #t null)))
+  (check-equal? (validate-json '(1 2 3) '(1 2 3)) '(1 2 3))
+  (check-equal? (validate-json (equal? (list 1 2 3)) '(1 2 3)) '(1 2 3))
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
@@ -272,4 +284,6 @@
                                                (: after-1
                                                   (when (cons (: second-number number) (list))
                                                     (even? second-number))))
-                                    (and (= 2 second-number) (equal? "something else" after-1))) '(1 2)))))
+                                    (and (= 2 second-number) (equal? "something else" after-1))) '(1 2))))
+  (check-exn exn:fail? (thunk (validate-json '(1 2 3) '())))
+  (check-exn exn:fail? (thunk (validate-json (equal? (list 1 2 3)) '()))))
