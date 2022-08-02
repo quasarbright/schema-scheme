@@ -38,11 +38,17 @@
 
 (begin-for-syntax
   (struct schema-ref [compiled-id] #:transparent)
+  (struct schema-macro [transformer] #:transparent)
+  
   (define/hygienic (expand-schema stx) #:definition
     (syntax-parse stx
       #:literal-sets (schema-literals)
       [schema-name:id #:when (lookup #'schema-name schema-ref?)
                       (schema-ref-compiled-id (lookup #'schema-name schema-ref?))]
+      [(macro-name:id rest ...)
+       #:when (lookup #'macro-name schema-macro?)
+       (define transformer (schema-macro-transformer (lookup #'macro-name schema-macro?)))
+       (expand-schema (transformer stx))]
       [(list-of schema)
        (with-scope sc
          (define/syntax-parse schema^ (expand-schema (add-scope #'schema sc)))
@@ -89,7 +95,9 @@
       [any #'any]
       [schema-name:id
        ; unbound var
-       (raise-syntax-error #f "unbound schema reference" #'schema-name)])))
+       (raise-syntax-error #f "unbound schema reference" #'schema-name)]
+      ; uncomment this if/when you do first-class schemas
+      #;[(rator:expr rand:expr ...) ???])))
 
 ;; INTERFACE MACROS
 
@@ -110,6 +118,16 @@
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
      (define/syntax-parse json^ (local-expand #'json 'expression '()))
      #'(schema-compiled json^)]))
+
+(define-syntax define-schema-syntax
+  (syntax-parser
+    [(_ macro-name:id transformer ...+)
+     ; just wrap the transformer function in schema-macro
+     #'
+     (define-syntax macro-name
+       (schema-macro transformer ...))]
+    [(_ (macro-name:id args ...) body ...+)
+     #'(define-schema-syntax macro-name (λ (args ...) body ...))]))
 
 ;; CORE
 
@@ -187,6 +205,7 @@
   (define-schema foo number)
   (check-equal? (validate-json foo 1) 1)
   (check-equal? (validate-json (list-of foo) '(1 2)) '(1 2))
+  ; can't do recursive definitions yet due to how definitions are expanded
   #;(define-schema rose (list-of rose))
   #;(check-equal? (validate-schema rose '(() () ((() ())))) '(() () ((() ()))))
   ; shadow built-in
@@ -212,6 +231,24 @@
                               '(1 2))
                 2)
   #;(check-equal? (validate-json (=> (: x (=> (: x (: y number)) (list x y))) (list x y)) '(1 2)) '((1 2) 2))
+  (local [(define-schema-syntax let
+            (syntax-parser
+              [(_ ([x:id schema] ...) body ...+)
+               #'(=> (and (: x schema) ...) body ...)]))
+          (define-schema foo (let ([x number] [y (=> any 2)]) (list x y)))]
+    (check-equal? (validate-json foo 1) (list 1 2)))
+  (local [(define-schema-syntax (let stx)
+            (syntax-parse stx
+              [(_ ([x:id schema] ...) body ...+)
+               #'(=> (and (: x schema) ...) body ...)]))
+          (define-schema foo (let ([x number] [y (=> any 2)]) (list x y)))]
+    (check-equal? (validate-json foo 1) (list 1 2)))
+  (local [(define-schema-syntax mylist
+            (syntax-parser
+              [(_) #'(list)]
+              [(_ schema0 schema ...)
+               #'(cons schema0 (mylist schema ...))]))]
+    (check-equal? (validate-json (mylist number boolean null) '(1 #t null)) '(1 #t null)))
   (check-exn exn:fail? (thunk (validate-json number 'null)))
   (check-exn exn:fail? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail? (thunk (validate-json string 'null)))
