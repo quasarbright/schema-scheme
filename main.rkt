@@ -84,7 +84,7 @@
        (define/syntax-parse schema^ (expand-schema #'schema))
        (define/syntax-parse body^ (local-expand #'body 'expression #f))
        #'(=> schema^ body^)]
-      [(: name:id schema)
+      [(: name:id (~optional schema #:defaults ([schema #'any])))
        (define/syntax-parse schema^ (expand-schema #'schema))
        (define/syntax-parse name^ (bind! #'name (racket-var)))
        #'(: name^ schema^)]
