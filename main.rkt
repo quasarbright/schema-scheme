@@ -1,7 +1,8 @@
 #lang racket
 (require "private/core.rkt")
-(require syntax/parse (for-syntax syntax/stx syntax/parse))
+(require syntax/parse (for-syntax syntax/stx syntax/parse syntax/id-set))
 (require (for-syntax ee-lib) ee-lib/define)
+(require (for-syntax racket/set))
 
 (module+ test
   (require rackunit))
@@ -21,19 +22,30 @@
           | (object <field> ...)                                  object schema
           | (? <expr> <schema> ...)                               predicate schema
           | (and <schema> ...+)                                   and schema
+          | (or <schema> ...+)                                    or schema
           | (: <identifier> <schema>)                             bind validation result
           | (when <schema> <racket-expr>)                         conditional check using bound validation results
           | (=> <schema> <racket-expr>)                           semantic action
 <field> := (<identifier> <schema>)                                object field
 |#
 
+; schema validation error
+(struct exn:fail:schema exn:fail ()
+  #:extra-constructor-name make-exn:fail:schema
+  #:transparent)
+
+; raise a schema validation error with the given message
+(define (fail-validation format-str . vs)
+  (raise (make-exn:fail:schema (format "validate-json: ~a" (apply format format-str vs)) (current-continuation-marks))))
+
 ;; EXPANDER
 
 ; define-literal-forms makes it so you can't use the literals in any racket expressions, so you can't use "list" or "and"
 ; binding spaces might solve this problem, but it'd create some other ones, like with higher order schemas.
+
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list and : when quote => cons object-has-field any equal?)
+    #:datum-literals (list-of list and or : when quote => cons object-has-field any equal?)
     ()))
 
 (begin-for-syntax
@@ -57,7 +69,7 @@
        ; this should be a macro, but it would shadow the actual list function
        (expand-schema
         (foldr (λ (first-schema rest-schema) #`(cons #,first-schema #,rest-schema))
-               #'(=> (: empty any) (if (equal? '() empty) '() (error 'validate-json "expected ~a, got ~a" '() empty)))
+               #'(=> (: empty any) (if (equal? '() empty) '() (fail-validation "expected ~a, got ~a" '() empty)))
                (syntax->list #'(schema ...))))]
       [(quote datum)
        (expand-schema #'(equal? (quote datum)))]
@@ -68,7 +80,7 @@
              (let ([expected-pv expected])
                (if (equal? v expected-pv)
                    v
-                   (error 'validate-json "expected ~a, got ~a" expected-pv v)))))]
+                   (fail-validation "expected ~a, got ~a" expected-pv v)))))]
       [(cons first-schema rest-schema)
        #`(cons #,(expand-schema #'first-schema) #,(expand-schema #'rest-schema))]
       [(object-has-field name:id schema)
@@ -79,6 +91,13 @@
        (expand-schema
         (foldl (λ (next and-rest) #`(and #,and-rest #,next))
               #'any
+              (syntax->list #'(schema ...))))]
+      [(or schema1 schema2)
+       #`(or #,(expand-schema #'schema1) #,(expand-schema #'schema2))]
+      [(or schema0 schema ...)
+       (expand-schema
+        (foldl (λ (next or-rest) #`(or #,or-rest #,next))
+              #'schema0
               (syntax->list #'(schema ...))))]
       [(=> schema body)
        (define/syntax-parse schema^ (expand-schema #'schema))
@@ -151,7 +170,7 @@
        [(: var:id inner-schema)
         #'(validate-core inner-schema json-v var (let ([result-v var]) body))]
        [(when inner-schema guard:expr)
-        #'(validate-core inner-schema json-v result-v (if guard body (error 'validate "when guard evaluated to #f")))]
+        #'(validate-core inner-schema json-v result-v (if guard body (fail-validation "when guard evaluated to #f")))]
        [(=> inner-schema =>-body:expr)
         #'(validate-core inner-schema json-v ignored-v (let ([result-v =>-body]) body))]
        [any #'(let ([result-v json-v]) body)]
@@ -162,28 +181,59 @@
                                                  (validate-core rest-schema rest-v rest-result-v
                                                                 (let ([result-v (cons first-result-v rest-result-v)])
                                                                   body))))
-                         (λ () (error 'validate-json "expected cons, got ~a" json-v)))]
+                         (λ () (fail-validation "expected cons, got ~a" json-v)))]
        [(list-of element-schema)
         #'(validate-list-of json-v
                             (λ (element) (validate-core element-schema element element-result-v element-result-v))
                             (λ (result-v) body)
-                            (λ () (error 'validate-json "expected a list, got ~a" json-v)))]
+                            (λ () (fail-validation "expected a list, got ~a" json-v)))]
        [(object-has-field field-name:id field-schema)
         #'(validate-object-field json-v
                                  'field-name
                                  (λ (field-result-v) (validate-core field-schema field-result-v result-v body))
-                                 (λ () (error 'validate-json "expected an object with a field ~a, got ~a" 'field-name json-v)))]
+                                 (λ () (fail-validation "expected an object with a field ~a, got ~a" 'field-name json-v)))]
        [(and schema1 schema2)
         #'(validate-core schema1 json-v ignored-v (validate-core schema2 json-v result-v body))]
+       [(or schema1 schema2)
+        (define schema1-vars (bound-schema-vars #'schema1))
+        (define schema2-vars (bound-schema-vars #'schema2))
+        ; TODO figure out a way to print the original, non-expanded syntax
+        (unless (bound-id-set=? schema1-vars schema2-vars) (raise-syntax-error #f "all schemas in an 'or' must have the same bindings" #'(or schema1 schema2)))
+        #'(with-handlers ([exn:fail:schema? (λ (e) (validate-core schema2 json-v result-v body))])
+            (validate-core schema1 json-v result-v body))]
        ; schemas are compiled to (-> any/c any) procedures
        [schema-ref:id #'(let ([result-v (schema-ref json-v)]) body)])]))
+
+(begin-for-syntax
+  (define/hygienic (bound-schema-vars stx) #:definition
+    (syntax-parse stx
+      #:literal-sets (schema-literals)
+      [(: var:id schema)
+       (set-add (bound-schema-vars #'schema) #'var)]
+      [var:id (immutable-bound-id-set)]
+      ; it has a separate scope
+      [(list-of schema) (immutable-bound-id-set)]
+      [(cons schema1 schema2) (apply set-union (immutable-bound-id-set) (stx-map (λ (stx) (bound-schema-vars stx)) #'(schema1 schema2)))]
+      [(object-has-field field schema) (bound-schema-vars #'schema)]
+      [(and schema ...) (bound-schema-vars* #'(schema ...))]
+      ; union doesn't really make sense, but they'll be asserted equal during expansion
+      [(or schema ...) (bound-schema-vars* #'(schema ...))]
+      [(=> schema body ...) (bound-schema-vars #'schema)]
+      [(when schema body ...) (bound-schema-vars #'schema)]
+      [any (immutable-bound-id-set)]))
+
+  ; unions bound vars of a list of schemas
+  (define/hygienic (bound-schema-vars* stx) #:definition
+    (syntax-parse stx
+      [(schema ...) (apply set-union (immutable-bound-id-set) (stx-map (λ (stx) (bound-schema-vars stx)) #'(schema ...)))])))
+
 
 ;; BUILT-IN SCHEMAS
 
 ; a private helper for defining atomic schemas in terms of other schemas
 (define-syntax-rule
   (define-atomic-schema name predicate description)
-  (define-schema name (=> (: json any) (if (predicate json) json (error 'validate-json "expected ~a, got ~a" description json)))))
+  (define-schema name (=> (: json any) (if (predicate json) json (fail-validation "expected ~a, got ~a" description json)))))
 
 (define-atomic-schema number number? "a number")
 (define-atomic-schema boolean boolean? "a boolean")
@@ -196,7 +246,7 @@
   (syntax-parser
     [(object (name:id (~optional schema #:defaults ([schema #'any]))) ...)
      (define/syntax-parse (name^ ...) (generate-temporaries #'(name ...)))
-     #'(=> (and (=> (: obj any) (if (hash? obj) obj (error 'validate-json "expected object, got ~a" obj)))
+     #'(=> (and (=> (: obj any) (if (hash? obj) obj (fail-validation "expected object, got ~a" obj)))
                 (object-has-field name (: name^ schema))
                 ...)
            (make-immutable-hasheq (list (cons 'name name^) ...)))]))
@@ -279,30 +329,38 @@
   (check-equal? (validate-json (=> (object-bind [x number] [y]) (list x y)) (hasheqv 'x 1 'y 'null)) '(1 null))
   ; shadow built-in with macro
   (local [(define-schema-syntax : (syntax-parser [(_ rest ...) #'number]))] (check-equal? (validate-json (:) 1) 1))
-  (check-exn exn:fail? (thunk (validate-json number 'null)))
-  (check-exn exn:fail? (thunk (validate-json boolean 'null)))
-  (check-exn exn:fail? (thunk (validate-json string 'null)))
-  (check-exn exn:fail? (thunk (validate-json null #t)))
-  (check-exn exn:fail? (thunk (validate-json (list-of boolean) 'null)))
-  (check-exn exn:fail? (thunk (validate-json (list-of boolean) (list #t 'null))))
-  (check-exn exn:fail? (thunk (validate-json (list number boolean) 'null)))
-  (check-exn exn:fail? (thunk (validate-json (list number boolean) '())))
-  (check-exn exn:fail? (thunk (validate-json (list number boolean) '(1 #t 1))))
-  (check-exn exn:fail? (thunk (validate-json (list number boolean) '(#t 1))))
-  (check-exn exn:fail? (thunk (validate-json (object) 'null)))
-  (check-exn exn:fail? (thunk (validate-json (object (foo number)) 'null)))
-  (check-exn exn:fail? (thunk (validate-json (object (foo number)) (hasheq))))
-  (check-exn exn:fail? (thunk (validate-json (object (foo number)) (hasheq 'foo #t))))
-  (check-exn exn:fail? (thunk (validate-json (object (foo number)) (hasheq 'bar 1))))
-  (check-exn exn:fail? (thunk (validate-json (? odd?) 2)))
-  (check-exn exn:fail? (thunk (validate-json (? odd? boolean) 1)))
+  (check-exn exn:fail:schema? (thunk (validate-json number 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json boolean 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json string 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json null #t)))
+  (check-exn exn:fail:schema? (thunk (validate-json (list-of boolean) 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json (list-of boolean) (list #t 'null))))
+  (check-exn exn:fail:schema? (thunk (validate-json (list number boolean) 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json (list number boolean) '())))
+  (check-exn exn:fail:schema? (thunk (validate-json (list number boolean) '(1 #t 1))))
+  (check-exn exn:fail:schema? (thunk (validate-json (list number boolean) '(#t 1))))
+  (check-exn exn:fail:schema? (thunk (validate-json (object) 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json (object (foo number)) 'null)))
+  (check-exn exn:fail:schema? (thunk (validate-json (object (foo number)) (hasheq))))
+  (check-exn exn:fail:schema? (thunk (validate-json (object (foo number)) (hasheq 'foo #t))))
+  (check-exn exn:fail:schema? (thunk (validate-json (object (foo number)) (hasheq 'bar 1))))
+  (check-exn exn:fail:schema? (thunk (validate-json (? odd?) 2)))
+  (check-exn exn:fail:schema? (thunk (validate-json (? odd? boolean) 1)))
   (check-equal? (validate-json number 1) 1)
-  (check-exn exn:fail?
+  (check-exn exn:fail:schema?
              (thunk (validate-json (when (cons (? (λ (v) (= v 1)))
                                                (: after-1
                                                   (when (cons (: second-number number) (list))
                                                     (even? second-number))))
                                     (and (= 2 second-number) (equal? "something else" after-1))) '(1 2))))
-  (check-exn exn:fail? (thunk (validate-json '(1 2 3) '())))
-  (check-exn exn:fail? (thunk (validate-json (equal? (list 1 2 3)) '()))))
+  (check-exn exn:fail:schema? (thunk (validate-json '(1 2 3) '())))
+  (check-exn exn:fail:schema? (thunk (validate-json (equal? (list 1 2 3)) '())))
+
+  (check-equal? (validate-json (or number boolean) 1) 1)
+  (check-equal? (validate-json (or number boolean) #t) #t)
+  (check-exn exn:fail:schema? (thunk (validate-json (or number boolean) 'null)))
+  (check-equal? (validate-json (or number boolean null) 'null) 'null)
+  ; fails bc it thinks it's duplicate bindings bc single scope
+  #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) 1) 1)
+  #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) #t) #t))
 
