@@ -122,14 +122,19 @@
 
 ;; INTERFACE MACROS
 
-(define-syntax (define-schema stx)
-  (syntax-parse stx
-    [(_ name:id schema)
+(define-syntax schema-rhs
+  (syntax-parser
+    [(_ schema)
      ; single scope for whole schema
      (define/syntax-parse schema^ (with-scope sc (expand-schema (add-scope #'schema sc))))
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
+     #'schema-compiled]))
+
+(define-syntax (define-schema stx)
+  (syntax-parse stx
+    [(_ name:id schema)
      #'(begin
-         (define (name-compiled json) (schema-compiled json))
+         (define (name-compiled json) ((schema-rhs schema) json))
          (define-syntax name (schema-ref #'name-compiled)))]))
 
 (define-syntax (validate-json stx)
@@ -280,9 +285,25 @@
   (define-schema foo number)
   (check-equal? (validate-json foo 1) 1)
   (check-equal? (validate-json (list-of foo) '(1 2)) '(1 2))
-  ; can't do recursive definitions yet due to how definitions are expanded
-  #;(define-schema rose (list-of rose))
-  #;(check-equal? (validate-schema rose '(() () ((() ())))) '(() () ((() ()))))
+  ; recursive definition
+  (define-schema rose (list-of rose))
+  (check-equal? (validate-json rose '(() () ((() ())))) '(() () ((() ()))))
+  ; mutually recursive definition
+  ; this should actually work, there is a bug with 'or'
+  #;(define-schema odd-length-list (cons any even-length-list))
+  #;(define-schema even-length-list (or '() (cons any odd-length-list)))
+  #;(check-equal? (validate-json even-length-list '()) '())
+  #;(check-equal? (validate-json odd-length-list '(1)) '(1))
+  #;(check-equal? (validate-json odd-length-list '(1 2 3)) '(1 2 3))
+  #;(check-exn exn:fail:schema? (thunk (validate-json odd-length-list '())))
+  ;(check-exn exn:fail:schema? (thunk (validate-json odd-length-list '(1 2))))
+  (define-schema mutl (list-of muto))
+  (define-schema muto (object [mutl mutl]))
+  (check-equal? (validate-json mutl '()) '())
+  (check-equal? (validate-json muto (hasheq 'mutl '())) (hasheq 'mutl '()))
+  (check-equal? (validate-json mutl (list (hasheq 'mutl '()) (hasheq 'mutl '())))
+                (list (hasheq 'mutl '()) (hasheq 'mutl '())))
+  (check-exn exn:fail:schema? (thunk (validate-json mutl (list (hasheq 'mutl 1)))))
   ; shadow built-in
   (check-equal? (local [(define-schema number boolean)] (validate-json number #t)) #t)
   (check-equal? (validate-json (list number) '(1)) '(1))
@@ -362,5 +383,9 @@
   (check-equal? (validate-json (or number boolean null) 'null) 'null)
   ; fails bc it thinks it's duplicate bindings bc single scope
   #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) 1) 1)
-  #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) #t) #t))
-
+  #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) #t) #t)
+  ; this fails because equal? compiles to a semantic action which binds a variable, which 'or' thinks
+  ; is bound by the user. This causes 'or's same-bindings check to fail even though the user defined
+  ; no bindings. I shouldn't have to change the compilation of equal?. Rather, I should make the
+  ; 'or' check account for hygiene and macro-introduced bindings.
+  #;(check-equal? (validate-json (or (equal? #t) number) 1) 1))
