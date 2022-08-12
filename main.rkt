@@ -1,6 +1,6 @@
 #lang racket
 (require "private/core.rkt")
-(require syntax/parse (for-syntax syntax/stx syntax/parse syntax/id-set))
+(require syntax/parse (for-syntax syntax/stx syntax/parse syntax/id-set syntax/id-table))
 (require (for-syntax ee-lib) ee-lib/define)
 (require (for-syntax racket/set))
 
@@ -49,14 +49,19 @@
     ()))
 
 (begin-for-syntax
-  (struct schema-ref [compiled-id] #:transparent)
+  (struct schema-ref [] #:transparent)
   (struct schema-macro [transformer] #:transparent)
+  (define compiled-names (make-free-id-table))
   
   (define/hygienic (expand-schema stx) #:definition
     (syntax-parse stx
       #:literal-sets (schema-literals)
       [schema-name:id #:when (lookup #'schema-name schema-ref?)
-                      (schema-ref-compiled-id (lookup #'schema-name schema-ref?))]
+                      ; the flip is necessary to get rid of the intro scope
+                      ; when we define a schema, the generated code does a free-table-set!.
+                      ; by the time that runs, the intro scope is flipped off. but in this macro
+                      ; it's still there so we flip it off here.
+                      (free-id-table-ref compiled-names (flip-intro-scope #'schema-name))]
       [(macro-name:id rest ...)
        #:when (lookup #'macro-name schema-macro?)
        (define transformer (schema-macro-transformer (lookup #'macro-name schema-macro?)))
@@ -130,12 +135,27 @@
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
      #'schema-compiled]))
 
+#;(phase-1-effect body)
+; runs 'body' every visit if we're in a module, or only once if we're in a local def ctx
+(define-syntax (phase-1-effect stx)
+  (syntax-case stx ()
+    [(_ e)
+     (if (eq? (syntax-local-context) 'module)
+      #'(begin-for-syntax e); this will run 'e' every visit
+      ; this will run 'e' once during the module's expansion
+      (let ()
+        (define def-ctx (syntax-local-make-definition-context))
+        (syntax-local-bind-syntaxes (list #'x) #'(begin e 5) def-ctx)
+        #'(begin)))]))
+
 (define-syntax (define-schema stx)
   (syntax-parse stx
     [(_ name:id schema)
      #'(begin
          (define (name-compiled json) ((schema-rhs schema) json))
-         (define-syntax name (schema-ref #'name-compiled)))]))
+         (define-syntax name (schema-ref))
+         (phase-1-effect
+           (free-id-table-set! compiled-names #'name #'name-compiled)))]))
 
 (define-syntax (validate-json stx)
   (syntax-parse stx
@@ -305,7 +325,7 @@
                 (list (hasheq 'mutl '()) (hasheq 'mutl '())))
   (check-exn exn:fail:schema? (thunk (validate-json mutl (list (hasheq 'mutl 1)))))
   ; shadow built-in
-  (check-equal? (local [(define-schema number boolean)] (validate-json number #t)) #t)
+  (check-equal? (let () (define-schema number boolean) (#%expression (validate-json number #t))) #t)
   (check-equal? (validate-json (list number) '(1)) '(1))
   (check-equal? (validate-json (when (: x number) (even? x)) 2) 2)
   (check-equal? (validate-json (when (list (: x number)) (even? x)) '(2)) '(2))
@@ -326,30 +346,33 @@
                                   x)
                               '(1 2))
                 2)
-  #;(check-equal? (validate-json (=> (: x (=> (: x (: y number)) (list x y))) (list x y)) '(1 2)) '((1 2) 2))
-  (local [(define-schema-syntax let
-            (syntax-parser
-              [(_ ([x:id schema] ...) body ...+)
-               #'(=> (and (: x schema) ...) body ...)]))
-          (define-schema foo (let ([x number] [y (=> any 2)]) (list x y)))]
+  #;(check-equal? (validate-json (=> (: x (=> (: x (: y number)) (list x y))) (list x y)) 1) '((1 1) 1))
+  (let ()
+    (define-schema-syntax let
+      (syntax-parser
+        [(_ ([x:id schema] ...) body ...+)
+         #'(=> (and (: x schema) ...) body ...)]))
+    (define-schema foo (let ([x number] [y (=> any 2)]) (list x y)))
     (check-equal? (validate-json foo 1) (list 1 2)))
-  (local [(define-schema-syntax (let stx)
-            (syntax-parse stx
-              [(_ ([x:id schema] ...) body ...+)
-               #'(=> (and (: x schema) ...) body ...)]))
-          (define-schema foo (let ([x number] [y (=> any 2)]) (list x y)))]
+  (let ()
+    (define-schema-syntax (let stx)
+      (syntax-parse stx
+        [(_ ([x:id schema] ...) body ...+)
+         #'(=> (and (: x schema) ...) body ...)]))
+    (define-schema foo (let ([x number] [y (=> any 2)]) (list x y)))
     (check-equal? (validate-json foo 1) (list 1 2)))
-  (local [(define-schema-syntax mylist
-            (syntax-parser
-              [(_) #'(list)]
-              [(_ schema0 schema ...)
-               #'(cons schema0 (mylist schema ...))]))]
+  (let ()
+    (define-schema-syntax mylist
+      (syntax-parser
+        [(_) #'(list)]
+        [(_ schema0 schema ...)
+         #'(cons schema0 (mylist schema ...))]))
     (check-equal? (validate-json (mylist number boolean null) '(1 #t null)) '(1 #t null)))
   (check-equal? (validate-json '(1 2 3) '(1 2 3)) '(1 2 3))
   (check-equal? (validate-json (equal? (list 1 2 3)) '(1 2 3)) '(1 2 3))
   (check-equal? (validate-json (=> (object-bind [x number] [y]) (list x y)) (hasheqv 'x 1 'y 'null)) '(1 null))
   ; shadow built-in with macro
-  (local [(define-schema-syntax : (syntax-parser [(_ rest ...) #'number]))] (check-equal? (validate-json (:) 1) 1))
+  (let () (define-schema-syntax : (syntax-parser [(_ rest ...) #'number])) (check-equal? (validate-json (:) 1) 1))
   (check-exn exn:fail:schema? (thunk (validate-json number 'null)))
   (check-exn exn:fail:schema? (thunk (validate-json boolean 'null)))
   (check-exn exn:fail:schema? (thunk (validate-json string 'null)))
