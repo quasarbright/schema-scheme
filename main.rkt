@@ -98,7 +98,9 @@
               #'any
               (syntax->list #'(schema ...))))]
       [(or schema1 schema2)
-       #`(or #,(expand-schema #'schema1) #,(expand-schema #'schema2))]
+       (define/syntax-parse schema1^ (with-scope sc (expand-schema (add-scope #'schema1 sc))))
+       (define/syntax-parse schema2^ (with-scope sc (expand-schema (add-scope #'schema2 sc))))
+       #'(or schema1^ schema2^)]
       [(or schema0 schema ...)
        (expand-schema
         (foldl (λ (next or-rest) #`(or #,or-rest #,next))
@@ -136,7 +138,8 @@
      #'schema-compiled]))
 
 #;(phase-1-effect body)
-; runs 'body' every visit if we're in a module, or only once if we're in a local def ctx
+; runs 'body' every visit if we're in a module, or only once if we're in a local def ctx.
+; necessary for providing/requiring schemas to work properly
 (define-syntax (phase-1-effect stx)
   (syntax-case stx ()
     [(_ e)
@@ -220,12 +223,10 @@
        [(and schema1 schema2)
         #'(validate-core schema1 json-v ignored-v (validate-core schema2 json-v result-v body))]
        [(or schema1 schema2)
-        (define schema1-vars (bound-schema-vars #'schema1))
-        (define schema2-vars (bound-schema-vars #'schema2))
-        ; TODO figure out a way to print the original, non-expanded syntax
-        (unless (bound-id-set=? schema1-vars schema2-vars) (raise-syntax-error #f "all schemas in an 'or' must have the same bindings" #'(or schema1 schema2)))
-        #'(with-handlers ([exn:fail:schema? (λ (e) (validate-core schema2 json-v result-v body))])
-            (validate-core schema1 json-v result-v body))]
+        ; 'body' doesn't have access to anything bound in 'or'
+        #'(let ([body-proc (λ (result-v) body)])
+            (with-handlers ([exn:fail:schema? (λ (e) (validate-core schema2 json-v result-v (body-proc result-v)))])
+              (validate-core schema1 json-v result-v (body-proc result-v))))]
        ; schemas are compiled to (-> any/c any) procedures
        [schema-ref:id #'(let ([result-v (schema-ref json-v)]) body)])]))
 
@@ -402,13 +403,21 @@
 
   (check-equal? (validate-json (or number boolean) 1) 1)
   (check-equal? (validate-json (or number boolean) #t) #t)
+  (check-equal? (validate-json (or (=> number 'num) (=> boolean 'bool)) #t)
+                'bool)
   (check-exn exn:fail:schema? (thunk (validate-json (or number boolean) 'null)))
   (check-equal? (validate-json (or number boolean null) 'null) 'null)
   ; fails bc it thinks it's duplicate bindings bc single scope
-  #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) 1) 1)
-  #;(check-equal? (validate-json (=> (or (: x number) (: x boolean)) x) #t) #t)
+  (check-equal? (validate-json (or (: x number) (: x boolean)) 1) 1)
+  (check-equal? (validate-json (or (: x number) (: x boolean)) #t) #t)
   ; this fails because equal? compiles to a semantic action which binds a variable, which 'or' thinks
   ; is bound by the user. This causes 'or's same-bindings check to fail even though the user defined
   ; no bindings. I shouldn't have to change the compilation of equal?. Rather, I should make the
   ; 'or' check account for hygiene and macro-introduced bindings.
-  #;(check-equal? (validate-json (or (equal? #t) number) 1) 1))
+  (check-equal? (validate-json (or (equal? #t) number) 1) 1)
+  ; bindings in an 'or' aren't in scope outside of the 'or'
+  (check-equal? (validate-json (=> (and (: x any) (or (list (: x any) (: y any)) any)) x) '(1 2))
+                '(1 2))
+  ; branches of an 'or' can have different sets of bindings
+  (check-equal? (validate-json (or (list (: x any) (: y any)) (list (: a any) (: b any))) '(1 2))
+                '(1 2)))
