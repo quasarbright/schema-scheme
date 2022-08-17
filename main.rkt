@@ -106,17 +106,17 @@
         (foldl (λ (next or-rest) #`(or #,or-rest #,next))
               #'schema0
               (syntax->list #'(schema ...))))]
-      [(=> schema body)
+      [(=> schema body ...+)
        (define/syntax-parse schema^ (expand-schema #'schema))
-       (define/syntax-parse body^ (local-expand #'body 'expression #f))
+       (define/syntax-parse body^ (local-expand #'(let () body ...) 'expression #f))
        #'(=> schema^ body^)]
       [(: name:id (~optional schema #:defaults ([schema #'any])))
        (define/syntax-parse schema^ (expand-schema #'schema))
        (define/syntax-parse name^ (bind! #'name (racket-var)))
        #'(: name^ schema^)]
-      [(when schema body)
+      [(when schema body ...+)
        (define/syntax-parse schema^ (expand-schema #'schema))
-       (define/syntax-parse body^ (local-expand #'body 'expression #f))
+       (define/syntax-parse body^ (local-expand #'(let () body ...) 'expression #f))
        #'(when schema^ body^)]
       ; special case
       [any #'any]
@@ -420,4 +420,10 @@
                 '(1 2))
   ; branches of an 'or' can have different sets of bindings
   (check-equal? (validate-json (or (list (: x any) (: y any)) (list (: a any) (: b any))) '(1 2))
-                '(1 2)))
+                '(1 2))
+  (test-equal? "=> has an implicit begin"
+               (validate-json (=> any (define x 2) x) #t)
+                2)
+  (test-equal? "when has an implicit begin"
+               (validate-json (when any (define x #t) x) 2)
+               2))
