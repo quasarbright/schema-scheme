@@ -108,7 +108,7 @@
               (syntax->list #'(schema ...))))]
       [(=> schema body ...+)
        (define/syntax-parse schema^ (expand-schema #'schema))
-       (define/syntax-parse body^ (local-expand #'(let () body ...) 'expression #f))
+       (define/syntax-parse body^ (local-expand #'(let () body ...) 'expression '() (current-def-ctx)))
        #'(=> schema^ body^)]
       [(: name:id (~optional schema #:defaults ([schema #'any])))
        (define/syntax-parse schema^ (expand-schema #'schema))
@@ -116,7 +116,7 @@
        #'(: name^ schema^)]
       [(when schema body ...+)
        (define/syntax-parse schema^ (expand-schema #'schema))
-       (define/syntax-parse body^ (local-expand #'(let () body ...) 'expression #f))
+       (define/syntax-parse body^ (local-expand #'(let () body ...) 'expression '() (current-def-ctx)))
        #'(when schema^ body^)]
       ; special case
       [any #'any]
@@ -165,8 +165,7 @@
     [(_ schema json:expr)
      (define/syntax-parse schema^ (with-scope sc (expand-schema (add-scope #'schema sc))))
      (define/syntax-parse schema-compiled #'(core-schema->racket schema^))
-     (define/syntax-parse json^ (local-expand #'json 'expression '()))
-     #'(schema-compiled json^)]))
+     #'(schema-compiled json)]))
 
 (define-syntax define-schema-syntax
   (syntax-parser
