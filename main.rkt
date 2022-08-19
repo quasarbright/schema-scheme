@@ -45,7 +45,7 @@
 
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list and or : when quote => cons object-has-field any equal?)
+    #:datum-literals (list-of list and or : when quote quasiquote unquote => cons object-has-field any equal?)
     ()))
 
 (begin-for-syntax
@@ -78,6 +78,31 @@
                (syntax->list #'(schema ...))))]
       [(quote datum)
        (expand-schema #'(equal? (quote datum)))]
+      [(unquote _)
+       (raise-syntax-error 'unquote "not used in quasiquote" stx)]
+      [(quasiquote qs)
+       (syntax-parse #'qs
+         #:literal-sets (schema-literals)
+         [(unquote schema) (expand-schema #'schema)]
+         [(qs ...) (expand-schema #'(list (quasiquote qs) ...))]
+         [datum (expand-schema #'(quote datum))])
+       ; racket match only allows one level of quasiquoting, which I think is reasonable
+       ; to go deeper, do something like this:
+       ; TODO delete on next commit
+       #;(let loop ([datum #'datum] [level 1])
+         (syntax-parse datum
+           #:literal-sets (schema-literals)
+           [(unquote datum)
+            (case level
+              ; this shouldn't even be possible
+              [(0) (raise-syntax-error 'unquote "not used in quasiquote" #'(unquote datum))]
+              [(1) (expand-schema #'datum)]
+              [else (list 'unquote (loop #'datum (sub1 level)))])]
+           [(quasiquote datum) (loop #'datum (add1 level))]
+           [(datum ...)
+            (define/syntax-parse (datum^ ...) (stx-map (λ (datum) (loop datum level)) #'(datum ...)))
+            #'(list 'quasiquote datum^ ...)]
+           [datum #'datum]))]
       [(equal? expected)
        ; don't pull this out into a macro because quote depends on it
        (expand-schema
@@ -425,4 +450,13 @@
                 2)
   (test-equal? "when has an implicit begin"
                (validate-json (when any (define x #t) x) 2)
+               2)
+  (test-equal? "basic quasiquote works"
+               (validate-json `(#t 2 ,number ,(=> any 'ignored))
+                              '(#t 2 3 null))
+               '(#t 2 3 ignored))
+  (test-equal? "quasiquote only has depth 1"
+               ; if qq supported depth >1, the variabele bind schema would not be validated against
+               (validate-json (=> `(1 `,(: x any) 3) x)
+                              '(1 `2 3))
                2))
