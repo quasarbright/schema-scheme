@@ -67,9 +67,8 @@
        (define transformer (schema-macro-transformer (lookup #'macro-name schema-macro?)))
        (expand-schema (transformer stx))]
       [(list-of schema)
-       (with-scope sc
-         (define/syntax-parse schema^ (expand-schema (add-scope #'schema sc)))
-         #'(list-of schema^))]
+       (define/syntax-parse schema^ (expand-schema #'schema))
+       #'(list-of schema^)]
       [(list schema ...)
        ; this should be a macro, but it would shadow the actual list function
        (expand-schema
@@ -218,7 +217,22 @@
                                                                   body))))
                          (λ () (fail-validation "expected cons, got ~a" json-v)))]
        [(list-of element-schema)
-        #'(validate-list-of json-v
+        (define vars-set (bound-schema-vars #'element-schema))
+        (define/syntax-parse (var ...) (datum->syntax #'element-schema (set->list vars-set)))
+        (define/syntax-parse (var-list-outer ...) (generate-temporaries #'(var ...)))
+        (define/syntax-parse (var-list-inner ...) (generate-temporaries #'(var ...)))
+        #'(if (list? json-v)
+              (let-values ([(results var-list-outer ...)
+                            (for/fold ([results '()] [var-list-inner '()] ...)
+                                      ([element json-v])
+                              (validate-core element-schema element element-result
+                                             (values (cons element-result results) (cons var var-list-inner) ...)))])
+                (let ([result-v (reverse results)]
+                      [var (reverse var-list-outer)]
+                      ...)
+                  body))
+              (fail-validation "expected a list, got ~a" json-v))
+        #;#'(validate-list-of json-v
                             (λ (element) (validate-core element-schema element element-result-v element-result-v))
                             (λ (result-v) body)
                             (λ () (fail-validation "expected a list, got ~a" json-v)))]
@@ -245,7 +259,7 @@
        (set-add (bound-schema-vars #'schema) #'var)]
       [var:id (immutable-bound-id-set)]
       ; it has a separate scope
-      [(list-of schema) (immutable-bound-id-set)]
+      [(list-of schema) (bound-schema-vars #'schema)]
       [(cons schema1 schema2) (apply set-union (immutable-bound-id-set) (stx-map (λ (stx) (bound-schema-vars stx)) #'(schema1 schema2)))]
       [(object-has-field field schema) (bound-schema-vars #'schema)]
       [(and schema ...) (bound-schema-vars* #'(schema ...))]
@@ -442,4 +456,10 @@
                ; if qq supported depth >1, the variabele bind schema would not be validated against
                (validate-json (=> `(1 `,(: x any) 3) x)
                               '(1 `2 3))
-               2))
+               2)
+  #;(test-equal? "list-of binds each variable to a list of its inner bindings"
+               (validate-json (=> (list-of (: a any)) a) '(1 2 3))
+               '(1 2 3))
+  #;(test-equal? "list-of handles bindings inside of other schemas"
+               (validate-json (=> (list-of (list (: a any) (: b any))) (list a b)) '((1 2) (3 4) (5 6)))
+               '((1 3 5) (2 4 6))))
