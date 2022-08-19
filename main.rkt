@@ -85,24 +85,7 @@
          #:literal-sets (schema-literals)
          [(unquote schema) (expand-schema #'schema)]
          [(qs ...) (expand-schema #'(list (quasiquote qs) ...))]
-         [datum (expand-schema #'(quote datum))])
-       ; racket match only allows one level of quasiquoting, which I think is reasonable
-       ; to go deeper, do something like this:
-       ; TODO delete on next commit
-       #;(let loop ([datum #'datum] [level 1])
-         (syntax-parse datum
-           #:literal-sets (schema-literals)
-           [(unquote datum)
-            (case level
-              ; this shouldn't even be possible
-              [(0) (raise-syntax-error 'unquote "not used in quasiquote" #'(unquote datum))]
-              [(1) (expand-schema #'datum)]
-              [else (list 'unquote (loop #'datum (sub1 level)))])]
-           [(quasiquote datum) (loop #'datum (add1 level))]
-           [(datum ...)
-            (define/syntax-parse (datum^ ...) (stx-map (λ (datum) (loop datum level)) #'(datum ...)))
-            #'(list 'quasiquote datum^ ...)]
-           [datum #'datum]))]
+         [datum (expand-schema #'(quote datum))])]
       [(equal? expected)
        ; don't pull this out into a macro because quote depends on it
        (expand-schema
