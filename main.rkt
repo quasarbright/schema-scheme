@@ -231,11 +231,7 @@
                       [var (reverse var-list-outer)]
                       ...)
                   body))
-              (fail-validation "expected a list, got ~a" json-v))
-        #;#'(validate-list-of json-v
-                            (λ (element) (validate-core element-schema element element-result-v element-result-v))
-                            (λ (result-v) body)
-                            (λ () (fail-validation "expected a list, got ~a" json-v)))]
+              (fail-validation "expected a list, got ~a" json-v))]
        [(object-has-field field-name:id field-schema)
         #'(validate-object-field json-v
                                  'field-name
@@ -457,9 +453,12 @@
                (validate-json (=> `(1 `,(: x any) 3) x)
                               '(1 `2 3))
                2)
-  #;(test-equal? "list-of binds each variable to a list of its inner bindings"
+  (test-equal? "list-of supports internal use of variables"
+               (validate-json (list-of (=> (: a) (- a))) '(1 2 3))
+               '(-1 -2 -3))
+  #;(test-equal? "list-of supports external use of variables"
                (validate-json (=> (list-of (: a any)) a) '(1 2 3))
                '(1 2 3))
-  #;(test-equal? "list-of handles bindings inside of other schemas"
+  #;(test-equal? "list-of supports external use of deep inner variables"
                (validate-json (=> (list-of (list (: a any) (: b any))) (list a b)) '((1 2) (3 4) (5 6)))
                '((1 3 5) (2 4 6))))
