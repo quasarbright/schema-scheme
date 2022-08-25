@@ -218,7 +218,7 @@
                          (λ () (fail-validation "expected cons, got ~a" json-v)))]
        [(list-of element-schema)
         (define vars-set (bound-schema-vars #'element-schema))
-        (define/syntax-parse (var ...) (datum->syntax #'element-schema (set->list vars-set)))
+        (define/syntax-parse (var ...) (set->list vars-set))
         (define/syntax-parse (var-list-outer ...) (generate-temporaries #'(var ...)))
         (define/syntax-parse (var-list-inner ...) (generate-temporaries #'(var ...)))
         #'(if (list? json-v)
@@ -248,7 +248,7 @@
        [schema-ref:id #'(let ([result-v (schema-ref json-v)]) body)])]))
 
 (begin-for-syntax
-  (define/hygienic (bound-schema-vars stx) #:definition
+  (define (bound-schema-vars stx)
     (syntax-parse stx
       #:literal-sets (schema-literals)
       [(: var:id schema)
@@ -456,9 +456,9 @@
   (test-equal? "list-of supports internal use of variables"
                (validate-json (list-of (=> (: a) (- a))) '(1 2 3))
                '(-1 -2 -3))
-  #;(test-equal? "list-of supports external use of variables"
+  (test-equal? "list-of supports external use of variables"
                (validate-json (=> (list-of (: a any)) a) '(1 2 3))
                '(1 2 3))
-  #;(test-equal? "list-of supports external use of deep inner variables"
+  (test-equal? "list-of supports external use of deep inner variables"
                (validate-json (=> (list-of (list (: a any) (: b any))) (list a b)) '((1 2) (3 4) (5 6)))
                '((1 3 5) (2 4 6))))
