@@ -259,8 +259,7 @@
       [(cons schema1 schema2) (apply set-union (immutable-bound-id-set) (stx-map (λ (stx) (bound-schema-vars stx)) #'(schema1 schema2)))]
       [(object-has-field field schema) (bound-schema-vars #'schema)]
       [(and schema ...) (bound-schema-vars* #'(schema ...))]
-      ; union doesn't really make sense, but they'll be asserted equal during expansion
-      [(or schema ...) (bound-schema-vars* #'(schema ...))]
+      [(or schema ...) (immutable-bound-id-set)]
       [(=> schema body ...) (bound-schema-vars #'schema)]
       [(when schema body ...) (bound-schema-vars #'schema)]
       [any (immutable-bound-id-set)]))
