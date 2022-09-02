@@ -55,7 +55,11 @@
                        (? valid?:expr desc:expr)
                        #:binding [(host valid?) (host desc) tail]
                        (or2 s1:schema s2:schema)
-                       #:binding [(nest-one s1 []) (nest-one s2 [])]))
+                       #:binding [(nest-one s1 []) (nest-one s2 [])]
+                       ; for some reason, using 'fail' doesn't work.
+                       ; using a fail schema says it's not a schema.
+                       (#%fail msg:expr)
+                       #:binding [(host msg) tail]))
 
 (define-syntax define-schema-scheme-syntax
   (syntax-parser
@@ -80,8 +84,10 @@
                                    [(quasiquote datum) 'datum]))
 ; TODO create fail schema and make that the base case for (or)
 (define-schema-syntax or (syntax-rules ()
-                           [(or schema) schema]
+                           [(or) (fail "all cases of 'or' failed")]
                            [(or schema0 schema ...) (or2 schema0 (or schema ...))]))
+; alias for #%fail
+(define-schema-syntax fail (syntax-rules () [(fail e ...) (#%fail e ...)]))
 
 (define-host-interface/definition (define-schema name:schema-ref s:schema-top)
   #:binding (export name)
@@ -103,7 +109,7 @@
 
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list and or2 bind when quote quasiquote unquote => cons object-has-field any equal? ?)
+    #:datum-literals (list-of list and or2 bind when quote quasiquote unquote => cons object-has-field any equal? ? #%fail)
     ())
 
   (define (compile-schema schema)
@@ -174,7 +180,8 @@
                                                              #'json
                                                              #'result
                                                              #'(body-proc result)
-                                                             #'on-fail))))])]))
+                                                             #'on-fail))))]
+         [(#%fail msg) #`(on-fail #,(compile-host-expr #'msg))])]))
 
   (define (compile-host-expr e)
     (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
@@ -221,4 +228,12 @@
                2)
   (test-exn "or both fail"
             exn:fail:schema?
-            (thunk (validate-json (or '1 '2) 3))))
+            (thunk (validate-json (or '1 '2) 3)))
+  (test-exn "fail schema"
+            #rx"boom"
+            ; for some reason, using 'fail' here errors out saying it's not a schema.
+            ; Using it in 'or' expansion and in the repl works though. maybe something with rackunit
+            (thunk (validate-json (#%fail "boom") 1)))
+  (test-exn "empty or"
+            #rx"all cases of 'or' failed"
+            (thunk (validate-json (or) 1))))
