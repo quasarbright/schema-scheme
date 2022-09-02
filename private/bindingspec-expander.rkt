@@ -6,6 +6,15 @@
 
 (require bindingspec (for-syntax syntax/parse))
 
+; schema validation error
+(struct exn:fail:schema exn:fail ()
+  #:extra-constructor-name make-exn:fail:schema
+  #:transparent)
+
+; raise a schema validation error with the given message
+(define (fail-validation format-str . vs)
+  (raise (make-exn:fail:schema (format "validate-json: ~a" (apply format format-str vs)) (current-continuation-marks))))
+
 (define-hosted-syntaxes
 
   (binding-class var #:description "schema-bound variable")
@@ -89,7 +98,7 @@
     ())
 
   (define (compile-schema schema)
-    #`(λ (json) #,(compile-validate schema #'json #'result #'result #'(λ ([msg "validation failed"]) (error 'validate-json msg)))))
+    #`(λ (json) #,(compile-validate schema #'json #'result #'result #'(λ ([msg "validation failed"]) (fail-validation msg)))))
   ; on-fail is syntax for a (-> [string?] any) which takes in an optional error message and, if there are no other schemas to try, errors out.
   ; 'json' and 'result' must be identifiers.
   ; the output is syntax that validates 'json' against 'schema' and binds the result of validating to 'result' in 'body',
@@ -157,22 +166,34 @@
 (module+ test
   (check-equal? (validate-json any 1) 1)
   (check-equal? (validate-json (object-has-field foo any) (hasheq 'foo 1)) 1)
+  (check-exn exn:fail:schema? (thunk (validate-json (object-has-field foo any) 1)))
+  (check-exn exn:fail:schema? (thunk (validate-json (object-has-field foo any) (hasheq 'bar 1))))
   (check-equal? (validate-json (=> any 2) 1) 2)
   (check-equal? (validate-json (when any #t) 1) 1)
+  (check-exn exn:fail:schema? (thunk (validate-json (when any #f) 1)))
   (check-equal? (validate-json (bind x any) 1) 1)
   (check-equal? (validate-json (=> (bind y any) (list y)) 1) '(1))
   (check-equal? (validate-json (when (bind y any) (even? y)) 2) 2)
   (check-equal? (validate-json (cons any any) '(1 2)) '(1 2))
+  (check-exn exn:fail:schema? (thunk (validate-json (cons any any) '())))
   (check-equal? (validate-json (=> (cons (bind x any) (bind y any)) (list x y)) '(1 2)) '(1 (2)))
   (check-equal? (validate-json (? even? "an even number") 2) 2)
+  (check-exn #rx"expected an even number" (thunk (validate-json (? even? "an even number") 1)))
   (check-equal? (validate-json (equal? 2) 2) 2)
+  (check-exn exn:fail:schema? (thunk (validate-json (equal? 2) 1)))
   (check-equal? (validate-json '2 2) 2)
+  (check-exn exn:fail:schema? (thunk (validate-json '2 1)))
   ; regression test: outer car-result would get shadowed by inner car-result bc no intro scopes.
   ; used to result in '(2 2)
   (check-equal? (validate-json (cons any (cons any any)) '(1 2)) '(1 2))
   (check-equal? (validate-json (list any any) '(1 2)) '(1 2))
+  (check-exn exn:fail:schema? (thunk (validate-json (list any any) '(1))))
+  (check-exn exn:fail:schema? (thunk (validate-json (list any any) '(1 2 3))))
+  (check-exn exn:fail:schema? (thunk (validate-json (list any any) '())))
   (check-equal? (validate-json (=> (list (bind a any) (bind b any)) (list b a)) '(1 2)) '(2 1))
   (check-equal? (validate-json (=> `(1 2 ,(bind x any)) x) '(1 2 3)) 3)
+  (check-exn exn:fail:schema? (thunk (validate-json (=> `(1 2 ,(bind x number)) x) '(1 2 "hello"))))
   (test-equal? "schema reference"
                (validate-json number 1)
-               1))
+               1)
+  (check-exn exn:fail:schema? (thunk (validate-json number "hello"))))
