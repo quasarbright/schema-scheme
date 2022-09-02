@@ -59,7 +59,9 @@
                        ; for some reason, using 'fail' doesn't work.
                        ; using a fail schema says it's not a schema.
                        (#%fail msg:expr)
-                       #:binding [(host msg) tail]))
+                       #:binding [(host msg) tail]
+                       (and2 s1:schema s2:schema)
+                       #:binding [(nest-one s1 (nest-one s2 tail))]))
 
 (define-syntax define-schema-scheme-syntax
   (syntax-parser
@@ -88,6 +90,12 @@
                            [(or schema0 schema ...) (or2 schema0 (or schema ...))]))
 ; alias for #%fail
 (define-schema-syntax fail (syntax-rules () [(fail e ...) (#%fail e ...)]))
+(define-schema-syntax and (syntax-rules ()
+                            [(and) any]
+                            ; this is necessary to ensure that the result of the 'and' is
+                            ; the result of the last schema
+                            [(and schema) schema]
+                            [(and schema0 schema ...) (and2 schema0 (and schema ...))]))
 
 (define-host-interface/definition (define-schema name:schema-ref s:schema-top)
   #:binding (export name)
@@ -109,7 +117,7 @@
 
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list and or2 bind when quote quasiquote unquote => cons object-has-field any equal? ? #%fail)
+    #:datum-literals (list-of list and2 or2 bind when quote quasiquote unquote => cons object-has-field any equal? ? #%fail)
     ())
 
   (define (compile-schema schema)
@@ -181,7 +189,17 @@
                                                              #'result
                                                              #'(body-proc result)
                                                              #'on-fail))))]
-         [(#%fail msg) #`(on-fail #,(compile-host-expr #'msg))])]))
+         [(#%fail msg) #`(on-fail #,(compile-host-expr #'msg))]
+         [(and2 schema1 schema2)
+          (compile-validate #'schema1
+                            #'json
+                            #'ignored
+                            (compile-validate #'schema2
+                                              #'json
+                                              #'result
+                                              #'body
+                                              #'on-fail)
+                            #'on-fail)])]))
 
   (define (compile-host-expr e)
     (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
@@ -236,4 +254,19 @@
             (thunk (validate-json (#%fail "boom") 1)))
   (test-exn "empty or"
             #rx"all cases of 'or' failed"
-            (thunk (validate-json (or) 1))))
+            (thunk (validate-json (or) 1)))
+  (test-equal? "and #t #t"
+               (validate-json (and '1 (=> any 2)) 1)
+               2)
+  (test-exn "and #t #f"
+            exn:fail:schema?
+            (thunk (validate-json (and '1 '2) 1)))
+  (test-exn "and #f #t"
+            exn:fail:schema?
+            (thunk (validate-json (and '1 '2) 2)))
+  (test-exn "and #f #f"
+            exn:fail:schema?
+            (thunk (validate-json (and '1 '2) 3)))
+  (test-equal? "empty and"
+               (validate-json (and) 1)
+               1))
