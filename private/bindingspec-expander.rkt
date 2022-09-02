@@ -326,4 +326,11 @@
   (test-equal? "listof uses inner results"
                (validate-json (listof (=> (bind x number) (* 2 x)))
                               '(1 2 3))
-               '(2 4 6)))
+               '(2 4 6))
+  #;(test-equal? "listof exposes inner bindings"
+              (validate-json (=> (listof (bind x any)) (list x x))
+                             '(1 2 3))
+              '((1 2 3) (1 2 3)))
+  #;(test-equal? "listof handles inner failure in an 'or'"
+                 (validate-json (or (listof number) any) '(1 #t 2))
+                 '(1 #t 2)))
