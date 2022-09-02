@@ -20,6 +20,7 @@
   (binding-class var #:description "schema-bound variable")
   (binding-class schema-ref
                  #:description "schema reference"
+                 ; TODO this caused failing persistent-free-id-table-set! on definitions. Why?
                  #;#;#:binding-space schema-scheme)
   (extension-class schema-macro
                    #:description "schema macro"
@@ -54,7 +55,9 @@
                        (cons car-schema:schema cdr-schema:schema)
                        #:binding (nest-one car-schema (nest-one cdr-schema tail))
                        (? valid?:expr desc:expr)
-                       #:binding [(host valid?) (host desc) tail]))
+                       #:binding [(host valid?) (host desc) tail]
+                       (or2 s1:schema s2:schema)
+                       #:binding [(nest-one s1 []) (nest-one s2 [])]))
 
 (define-syntax define-schema-scheme-syntax
   (syntax-parser
@@ -77,6 +80,10 @@
                                    [(quasiquote (unquote schema)) schema]
                                    [(quasiquote (schema ...)) (list (quasiquote schema)  ...)]
                                    [(quasiquote datum) 'datum]))
+; TODO create fail schema and make that the base case for (or)
+(define-schema-syntax or (syntax-rules ()
+                           [(or schema) schema]
+                           [(or schema0 schema ...) (or2 schema0 (or schema ...))]))
 
 (define-host-interface/definition (define-schema name:schema-ref s:schema-top)
   #:binding (export name)
@@ -86,6 +93,9 @@
     [(compile-schema #'s)]))
 
 (define-schema number (? number? "a number"))
+(define-schema string (? string? "a string"))
+(define-schema boolean (? boolean? "a boolean"))
+(define-schema null 'null)
 
 (define-host-interface/expression (validate-json s:schema-top json:expr)
   #:binding [s (host json)]
@@ -94,7 +104,7 @@
 
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list and or bind when quote quasiquote unquote => cons object-has-field any equal? ?)
+    #:datum-literals (list-of list and or2 bind when quote quasiquote unquote => cons object-has-field any equal? ?)
     ())
 
   (define (compile-schema schema)
@@ -158,7 +168,16 @@
                 (on-fail (format "expected ~a, but got ~v" #,(compile-host-expr #'desc) json)))]
          [schema-ref:id
           ; TODO handle failure, might want to have schemas take in an on-fail continuation or something.
-          #`(let ([result (#,(compile-reference #'schema-ref) json)]) body)])]))
+          #`(let ([result (#,(compile-reference #'schema-ref) json)]) body)]
+         [(or2 schema1 schema2)
+          ; 'body' shouldn't have access to anything bound in 'or'
+          #`(let ([body-proc (λ (result) body)])
+              #,(compile-validate #'schema1 #'json #'result #'(body-proc result)
+                                  #`(λ _ #,(compile-validate #'schema2
+                                                             #'json
+                                                             #'result
+                                                             #'(body-proc result)
+                                                             #'on-fail))))])]))
 
   (define (compile-host-expr e)
     (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
@@ -196,4 +215,13 @@
   (test-equal? "schema reference"
                (validate-json number 1)
                1)
-  (check-exn exn:fail:schema? (thunk (validate-json number "hello"))))
+  (check-exn exn:fail:schema? (thunk (validate-json number "hello")))
+  (test-equal? "or schema"
+               (validate-json (or '1 '2) 1)
+               1)
+  (test-equal? "or schema where first fails"
+               (validate-json (or '1 '2) 2)
+               2)
+  (test-exn "or both fail"
+            exn:fail:schema?
+            (thunk (validate-json (or '1 '2) 3))))
