@@ -35,8 +35,6 @@
                        #:description "schema"
                        #:allow-extension schema-macro
                        #:binding-space schema-scheme
-                       any
-                       #:binding {tail}
                        v:schema-ref
                        #:binding {tail}
                        (bind v:var s:schema)
@@ -96,6 +94,7 @@
 (define-schema string (? string? "a string"))
 (define-schema boolean (? boolean? "a boolean"))
 (define-schema null 'null)
+(define-schema any (? (const #t) "anything"))
 
 (define-host-interface/expression (validate-json s:schema-top json:expr)
   #:binding [s (host json)]
@@ -133,7 +132,6 @@
                             #'ignored
                             #`(let ([result #,(compile-host-expr #'action)]) body)
                             #'on-fail)]
-         [any #'(let ([result json]) body)]
          [(object-has-field name:id schema)
           ; this shouldn't be necessary, but I'm paranoid bc this compiler doesn't get intro scopes
           #:with (field) (generate-temporaries (list #'field))
@@ -161,7 +159,6 @@
                                                         #'on-fail)
                                       #'on-fail))
                 (on-fail (format "expected a cons, but got ~v " json)))]
-         ; TODO 'any' should be written in terms of this
          [(? valid? desc)
           #`(if (#,(compile-host-expr #'valid?) json)
                 (let ([result json]) body)
