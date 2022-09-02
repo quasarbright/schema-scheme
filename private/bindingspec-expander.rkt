@@ -61,7 +61,9 @@
                        (#%fail msg:expr)
                        #:binding [(host msg) tail]
                        (and2 s1:schema s2:schema)
-                       #:binding [(nest-one s1 (nest-one s2 tail))]))
+                       #:binding [(nest-one s1 (nest-one s2 tail))]
+                       (listof s:schema)
+                       #:binding [(nest-one s tail)]))
 
 (define-syntax define-schema-scheme-syntax
   (syntax-parser
@@ -209,7 +211,15 @@
                                               #'result
                                               #'body
                                               #'on-fail)
-                            #'on-fail)])]))
+                            #'on-fail)]
+         ; TODO handle inner failure.
+         ; can do a fold, or can probably get away with map and some racket/control magic
+         ; TODO handle inner bindings
+         [(listof schema)
+          #`(if (list? json)
+                (let ([result (map (λ (element) (validate-json schema element)) json)])
+                  body)
+                (on-fail (format "expected a list, but got ~a" json)))])]))
 
   (define (compile-host-expr e)
     (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
@@ -303,4 +313,17 @@
   #;(test-equal? "bindings escape object schema"
                (validate-json (=> (object [age (bind age number)]) age)
                               (hasheq 'age 21))
-               21))
+               21)
+  (test-equal? "listof"
+               (validate-json (listof number) '(1 2 3))
+               '(1 2 3))
+  (test-exn "listof not a list"
+            #rx"expected a list"
+            (thunk (validate-json (listof number) 1)))
+  (test-exn "listof element fails"
+            #rx"expected a number"
+            (thunk (validate-json (listof number) '(1 #t 3))))
+  (test-equal? "listof uses inner results"
+               (validate-json (listof (=> (bind x number) (* 2 x)))
+                              '(1 2 3))
+               '(2 4 6)))
