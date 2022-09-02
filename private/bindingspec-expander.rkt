@@ -84,7 +84,6 @@
                                    [(quasiquote (unquote schema)) schema]
                                    [(quasiquote (schema ...)) (list (quasiquote schema)  ...)]
                                    [(quasiquote datum) 'datum]))
-; TODO create fail schema and make that the base case for (or)
 (define-schema-syntax or (syntax-rules ()
                            [(or) (fail "all cases of 'or' failed")]
                            [(or schema0 schema ...) (or2 schema0 (or schema ...))]))
@@ -121,14 +120,16 @@
     ())
 
   (define (compile-schema schema)
-    #`(λ (json) #,(compile-validate schema #'json #'result #'result #'(λ ([msg "validation failed"]) (fail-validation msg)))))
-  ; on-fail is syntax for a (-> [string?] any) which takes in an optional error message and, if there are no other schemas to try, errors out.
+    #`(λ (json [on-fail #f])
+        (let ([on-fail (or on-fail (λ ([msg "validation failed"]) (fail-validation msg)))])
+          #,(compile-validate schema #'json #'result #'result #'on-fail))))
+  ; on-fail is syntax for an identifier bound to a (-> [string?] any) which takes in an optional error message and, if there are no other schemas to try, errors out.
   ; 'json' and 'result' must be identifiers.
   ; the output is syntax that validates 'json' against 'schema' and binds the result of validating to 'result' in 'body',
   ; or calls 'on-fail' with an error message.
   (define (compile-validate schema json result body on-fail)
     (syntax-parse (list schema json result body on-fail)
-      [(schema json:id result:id body on-fail)
+      [(schema json:id result:id body on-fail:id)
        (syntax-parse #'schema
          #:literal-sets (schema-literals)
          [(bind var:id schema)
@@ -178,17 +179,17 @@
                 (let ([result json]) body)
                 (on-fail (format "expected ~a, but got ~v" #,(compile-host-expr #'desc) json)))]
          [schema-ref:id
-          ; TODO handle failure, might want to have schemas take in an on-fail continuation or something.
-          #`(let ([result (#,(compile-reference #'schema-ref) json)]) body)]
+          #`(let ([result (#,(compile-reference #'schema-ref) json on-fail)]) body)]
          [(or2 schema1 schema2)
+          #:with new-on-fail #`(λ _ #,(compile-validate #'schema2
+                                                      #'json
+                                                      #'result
+                                                      #'(body-proc result)
+                                                      #'on-fail))
           ; 'body' shouldn't have access to anything bound in 'or'
-          #`(let ([body-proc (λ (result) body)])
-              #,(compile-validate #'schema1 #'json #'result #'(body-proc result)
-                                  #`(λ _ #,(compile-validate #'schema2
-                                                             #'json
-                                                             #'result
-                                                             #'(body-proc result)
-                                                             #'on-fail))))]
+          #`(let* ([body-proc (λ (result) body)]
+                   [on-fail new-on-fail])
+              #,(compile-validate #'schema1 #'json #'result #'(body-proc result) #'on-fail))]
          [(#%fail msg) #`(on-fail #,(compile-host-expr #'msg))]
          [(and2 schema1 schema2)
           (compile-validate #'schema1
@@ -269,4 +270,12 @@
             (thunk (validate-json (and '1 '2) 3)))
   (test-equal? "empty and"
                (validate-json (and) 1)
-               1))
+               1)
+  ; regression test: schema refs used to not handle failure properly.
+  ; failure in the referenced schema would result in an exception, rather than using on-fail.
+  (test-equal? "or with schema ref"
+               (validate-json (or number string) "hello")
+               "hello")
+  (test-exn "failing or with schema ref"
+            #rx"all cases of 'or' failed"
+            (thunk (validate-json (or number string) 'null))))
