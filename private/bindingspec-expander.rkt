@@ -11,7 +11,7 @@
   (binding-class var #:description "schema-bound variable")
   (binding-class schema-ref
                  #:description "schema reference"
-                 #:binding-space schema-scheme)
+                 #;#;#:binding-space schema-scheme)
   (extension-class schema-macro
                    #:description "schema macro"
                    #:binding-space schema-scheme)
@@ -69,6 +69,15 @@
                                    [(quasiquote (schema ...)) (list (quasiquote schema)  ...)]
                                    [(quasiquote datum) 'datum]))
 
+(define-host-interface/definition (define-schema name:schema-ref s:schema-top)
+  #:binding (export name)
+  ->
+  (define
+    [(compile-binder! #'name)]
+    [(compile-schema #'s)]))
+
+(define-schema number (? number? "a number"))
+
 (define-host-interface/expression (validate-json s:schema-top json:expr)
   #:binding [s (host json)]
   #:with s^ (compile-schema #'s)
@@ -112,7 +121,7 @@
           #`(if (and (hash? json) (hash-has-key? json 'name))
                 (let ([field (hash-ref json 'name)])
                   #,(compile-validate #'schema #'field #'result #'body #'on-fail))
-                (on-fail (format "expected an object, but got ~a" json)))]
+                (on-fail (format "expected an object, but got ~v" json)))]
          [(cons car-schema cdr-schema)
           ; since this compiler isn't a macro, we don't get intro scopes!
           ; this causes introduced variables of nested conses to shadow each other,
@@ -132,12 +141,15 @@
                                                             body)
                                                         #'on-fail)
                                       #'on-fail))
-                (on-fail (format "expected a cons, but got ~a " json)))]
+                (on-fail (format "expected a cons, but got ~v " json)))]
          ; TODO 'any' should be written in terms of this
          [(? valid? desc)
           #`(if (#,(compile-host-expr #'valid?) json)
                 (let ([result json]) body)
-                (on-fail "expected ~a, but got ~a" #,(compile-host-expr #'desc) json))])]))
+                (on-fail (format "expected ~a, but got ~v" #,(compile-host-expr #'desc) json)))]
+         [schema-ref:id
+          ; TODO handle failure, might want to have schemas take in an on-fail continuation or something.
+          #`(let ([result (#,(compile-reference #'schema-ref) json)]) body)])]))
 
   (define (compile-host-expr e)
     (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
@@ -160,4 +172,7 @@
   (check-equal? (validate-json (cons any (cons any any)) '(1 2)) '(1 2))
   (check-equal? (validate-json (list any any) '(1 2)) '(1 2))
   (check-equal? (validate-json (=> (list (bind a any) (bind b any)) (list b a)) '(1 2)) '(2 1))
-  (check-equal? (validate-json (=> `(1 2 ,(bind x any)) x) '(1 2 3)) 3))
+  (check-equal? (validate-json (=> `(1 2 ,(bind x any)) x) '(1 2 3)) 3)
+  (test-equal? "schema reference"
+               (validate-json number 1)
+               1))
