@@ -95,6 +95,15 @@
                             ; the result of the last schema
                             [(and schema) schema]
                             [(and schema0 schema ...) (and2 schema0 (and schema ...))]))
+; TODO this uses =>, so bindings inside this schema are not in scope outside of it
+(define-schema-syntax object
+  (syntax-parser
+    [(object [field-name:id (~optional schema #:defaults ([schema #'any]))] ...)
+     ; it is necessary to generate temporaries so the introduced bindings aren't usable outside of this schema.
+     ; since the user supplies field-name ..., they won't get macro intro scope.
+     #:with (field-name^ ...) (generate-temporaries (attribute field-name))
+     #'(=> (and (object-has-field field-name (bind field-name^ schema)) ...)
+           (make-immutable-hasheq (list (cons 'field-name field-name^) ...)))]))
 
 (define-host-interface/definition (define-schema name:schema-ref s:schema-top)
   #:binding (export name)
@@ -278,4 +287,20 @@
                "hello")
   (test-exn "failing or with schema ref"
             #rx"all cases of 'or' failed"
-            (thunk (validate-json (or number string) 'null))))
+            (thunk (validate-json (or number string) 'null)))
+  (test-equal? "object"
+               (validate-json (object [age number] [name string])
+                              (hasheq 'age 1 'name "mike" 'extra #t))
+               (hasheq 'age 1 'name "mike"))
+  (test-exn "object not hasheq"
+            exn:fail:schema?
+            (thunk (validate-json (object [age number] [name string]) 1)))
+  (test-exn "object missing field"
+            exn:fail:schema?
+            (thunk (validate-json (object [age number] [name string])
+                                  (hasheq 'age 1))))
+  ; TODO fix this scoping issue. it's because object uses =>, which creates a scope
+  #;(test-equal? "bindings escape object schema"
+               (validate-json (=> (object [age (bind age number)]) age)
+                              (hasheq 'age 21))
+               21))
