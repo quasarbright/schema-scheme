@@ -212,8 +212,6 @@
                                               #'body
                                               #'on-fail)
                             #'on-fail)]
-         ; TODO handle inner failure.
-         ; can do a fold, or can probably get away with map and some racket/control magic
          ; TODO handle inner bindings
          [(listof schema)
           (define bound-vars-set (get-schema-bound-vars #'schema))
@@ -235,16 +233,18 @@
                         [(element) (generate-temporaries (list #'element))]
                         [(element-result) (generate-temporaries (list #'element-result))])
             #`(if (list? json)
-                  (let-values ([(results var-bind ...)
-                                (for/fold ([results '()] [var-list-bind '()] ...)
-                                          ([element json])
-                                  #,(compile-validate #'schema #'element #'element-result
-                                                      #'(values (cons element-result results) (cons var-ref var-list-ref) ...)
-                                                      #'on-fail))])
-                    (let ([result (reverse results)]
-                          [var-bind (reverse var-list-ref)]
-                          ...)
-                      body))
+                  (let/cc k
+                    (let ([on-fail-k (λ args (k (apply on-fail args)))])
+                      (let-values ([(results var-bind ...)
+                                    (for/fold ([results '()] [var-list-bind '()] ...)
+                                              ([element json])
+                                      #,(compile-validate #'schema #'element #'element-result
+                                                          #'(values (cons element-result results) (cons var-ref var-list-ref) ...)
+                                                          #'on-fail-k))])
+                        (let ([result (reverse results)]
+                              [var-bind (reverse var-list-ref)]
+                              ...)
+                          body))))
                   (on-fail (format "expected a list, but got ~a" json))))])]))
 
   ; returns a bound-id-set of all vars bound in the schema according to the scoping rules.
@@ -375,6 +375,6 @@
               (validate-json (=> (listof (bind x any)) (list x x))
                              '(1 2 3))
               '((1 2 3) (1 2 3)))
-  #;(test-equal? "listof handles inner failure in an 'or'"
+  (test-equal? "listof handles inner failure in an 'or'"
                  (validate-json (or (listof number) any) '(1 #t 2))
                  '(1 #t 2)))
