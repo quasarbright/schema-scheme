@@ -106,6 +106,12 @@
      #:with (field-name^ ...) (generate-temporaries (attribute field-name))
      #'(=> (and (object-has-field field-name (bind field-name^ schema)) ...)
            (make-immutable-hasheq (list (cons 'field-name field-name^) ...)))]))
+(define-schema-syntax let
+  (syntax-parser
+    [(let ([var:id schema] ...)
+       body)
+     #'(=> (and (bind var schema) ...)
+           body)]))
 
 (define-host-interface/definition (define-schema name:schema-ref s:schema-top)
   #:binding (export name)
@@ -230,7 +236,7 @@
                               [var-bind (reverse var-list-ref)]
                               ...)
                           body))))
-                  (on-fail (format "expected a list, but got ~a" json))))])]))
+                  (on-fail (format "expected a list, but got ~v" json))))])]))
 
   ; returns a bound-id-set of all vars bound in the schema according to the scoping rules.
   ; does not do compile-binder! or compile-reference
@@ -366,4 +372,14 @@
   (test-case "recursive  schema"
     (define-schema rose (listof rose))
     (check-equal? (validate-json rose '(() (() ()))) '(() (() ())))
-    (check-exn exn:fail:schema? (thunk (validate-json rose '(() () (((1)))))))))
+    (check-exn exn:fail:schema? (thunk (validate-json rose '(() () (((1))))))))
+  (test-equal? "let schema"
+               (validate-json (let ([x (=> number 2)] [y number])
+                                (list x y))
+                              3)
+               '(2 3))
+  (test-equal? "let schema refer to previous bindings"
+               (validate-json (let ([x (=> number 2)] [y (=> number x)])
+                                (list x y))
+                              1)
+               '(2 2)))
