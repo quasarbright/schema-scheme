@@ -218,10 +218,18 @@
          [(listof schema)
           (define bound-vars-set (get-schema-bound-vars #'schema))
           (define/syntax-parse (var ...) (set->list bound-vars-set))
+          ; this causes compile-binder! to run twice. once here, once in the compilation
+          ; you can either take in a mapping of binders to their compiled versions
+          ; or return a set of bound ids in addition to the output stx in compile-validate.
+          ; or you could just not expose variables bound in listof.
+          ; or you could make a safe compile-binder!, run this map after compiling the element stuff, and use
+          ; the safe variant here.
+          ; or you could make a pass that just does compile-binder! on everything.
+          ; all options suck
           (define/syntax-parse (var-bind ...) (stx-map compile-binder! (attribute var)))
           (define/syntax-parse (var-ref ...) (stx-map compile-reference (attribute var)))
-          (define/syntax-parse (var-list-bind ...) (generate-temporaries (attribute var-bind)))
-          (define/syntax-parse (var-list-ref ...) (generate-temporaries (attribute var-ref)))
+          (define/syntax-parse (var-list-bind ...) (generate-temporaries (attribute var)))
+          (define/syntax-parse (var-list-ref ...) (generate-temporaries (attribute var)))
           ; just to simulate introduction scopes to be safe
           (with-syntax ([(results) (generate-temporaries (list #'results))]
                         [(element) (generate-temporaries (list #'element))]
