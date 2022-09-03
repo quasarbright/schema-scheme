@@ -4,7 +4,7 @@
 (provide (all-defined-out)
          (for-space schema-scheme (all-defined-out)))
 
-(require bindingspec (for-syntax syntax/parse))
+(require bindingspec (for-syntax syntax/parse racket/set syntax/id-set syntax/stx))
 
 ; schema validation error
 (struct exn:fail:schema exn:fail ()
@@ -127,7 +127,7 @@
 
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (list-of list and2 or2 bind when quote quasiquote unquote => cons object-has-field any equal? ? #%fail)
+    #:datum-literals (listof list and2 or2 bind when quote quasiquote unquote => cons object-has-field any equal? ? #%fail)
     ())
 
   (define (compile-schema schema)
@@ -216,10 +216,46 @@
          ; can do a fold, or can probably get away with map and some racket/control magic
          ; TODO handle inner bindings
          [(listof schema)
-          #`(if (list? json)
-                (let ([result (map (λ (element) (validate-json schema element)) json)])
-                  body)
-                (on-fail (format "expected a list, but got ~a" json)))])]))
+          (define bound-vars-set (get-schema-bound-vars #'schema))
+          (define/syntax-parse (var ...) (set->list bound-vars-set))
+          (define/syntax-parse (var-bind ...) (stx-map compile-binder! (attribute var)))
+          (define/syntax-parse (var-ref ...) (stx-map compile-reference (attribute var)))
+          (define/syntax-parse (var-list-bind ...) (generate-temporaries (attribute var-bind)))
+          (define/syntax-parse (var-list-ref ...) (generate-temporaries (attribute var-ref)))
+          ; just to simulate introduction scopes to be safe
+          (with-syntax ([(results) (generate-temporaries (list #'results))]
+                        [(element) (generate-temporaries (list #'element))]
+                        [(element-result) (generate-temporaries (list #'element-result))])
+            #`(if (list? json)
+                  (let-values ([(results var-bind ...)
+                                (for/fold ([results '()] [var-list-bind '()] ...)
+                                          ([element json])
+                                  #,(compile-validate #'schema #'element #'element-result
+                                                      #'(values (cons element-result results) (cons var-ref var-list-ref) ...)
+                                                      #'on-fail))])
+                    (let ([result (reverse results)]
+                          [var-bind (reverse var-list-ref)]
+                          ...)
+                      body))
+                  (on-fail (format "expected a list, but got ~a" json))))])]))
+
+  ; returns a bound-id-set of all vars bound in the schema according to the scoping rules.
+  ; does not do compile-binder! or compile-reference
+  (define (get-schema-bound-vars schema)
+    (syntax-parse schema
+      #:literal-sets (schema-literals)
+      [schema-ref:id (immutable-bound-id-set)]
+      [(bind v:id schema) (set-add (get-schema-bound-vars #'schema) #'v)]
+      ; no bound ids because they have their own scopes
+      [(=> schema body) (immutable-bound-id-set)]
+      [(when schema guard) (immutable-bound-id-set)]
+      [(object-has-field name:id schema) (get-schema-bound-vars #'schema)]
+      [(cons schema1 schema2) (set-union (get-schema-bound-vars #'schema1) (get-schema-bound-vars #'schema2))]
+      [(? valid? desc) (immutable-bound-id-set)]
+      [(or2 schema1 schema2) (set-union (get-schema-bound-vars #'schema1) (get-schema-bound-vars #'schema2))]
+      [(#%fail msg) (immutable-bound-id-set)]
+      [(and2 schema1 schema2) (set-union (get-schema-bound-vars #'schema1) (get-schema-bound-vars #'schema2))]
+      [(listof schema) (get-schema-bound-vars #'schema)]))
 
   (define (compile-host-expr e)
     (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
