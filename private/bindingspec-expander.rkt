@@ -127,7 +127,8 @@
 
 (begin-for-syntax
   (define-literal-set schema-literals
-    #:datum-literals (listof list and2 or2 bind when quote quasiquote unquote => cons object-has-field any equal? ? #%fail)
+    ; TODO binding-spaced non-datum literals
+    #:datum-literals (listof list and2 or2 bind when => cons object-has-field ? #%fail)
     ())
 
   (define (compile-schema schema)
@@ -147,15 +148,11 @@
           #:with var^ (compile-binder! #'var)
           (compile-validate #'schema #'json #'result #'(let ([var^ result]) body) #'on-fail)]
          [(when schema guard)
-          (compile-validate #'schema
-                            #'json
-                            #'result
+          (compile-validate #'schema #'json #'result
                             #`(if #,(compile-host-expr #'guard) body (on-fail "'when' guard evaluated to #f"))
                             #'on-fail)]
          [(=> schema action)
-          (compile-validate #'schema
-                            #'json
-                            #'ignored
+          (compile-validate #'schema #'json #'ignored
                             #`(let ([result #,(compile-host-expr #'action)]) body)
                             #'on-fail)]
          [(object-has-field name:id schema)
@@ -174,12 +171,8 @@
           #`(if (cons? json)
                 (let ([car-value (car json)]
                       [cdr-value (cdr json)])
-                  #,(compile-validate #'car-schema
-                                      #'car-value
-                                      #'car-result
-                                      (compile-validate #'cdr-schema
-                                                        #'cdr-value
-                                                        #'cdr-result
+                  #,(compile-validate #'car-schema #'car-value #'car-result
+                                      (compile-validate #'cdr-schema #'cdr-value #'cdr-result
                                                         #'(let ([result (cons car-result cdr-result)])
                                                             body)
                                                         #'on-fail)
@@ -192,25 +185,17 @@
          [schema-ref:id
           #`(let ([result (#,(compile-reference #'schema-ref) json on-fail)]) body)]
          [(or2 schema1 schema2)
-          #:with new-on-fail #`(λ _ #,(compile-validate #'schema2
-                                                      #'json
-                                                      #'result
-                                                      #'(body-proc result)
-                                                      #'on-fail))
+          #:with new-on-fail #`(λ _ #,(compile-validate #'schema2 #'json #'result
+                                                        #'(body-proc result)
+                                                        #'on-fail))
           ; 'body' shouldn't have access to anything bound in 'or'
           #`(let* ([body-proc (λ (result) body)]
                    [on-fail new-on-fail])
               #,(compile-validate #'schema1 #'json #'result #'(body-proc result) #'on-fail))]
          [(#%fail msg) #`(on-fail #,(compile-host-expr #'msg))]
          [(and2 schema1 schema2)
-          (compile-validate #'schema1
-                            #'json
-                            #'ignored
-                            (compile-validate #'schema2
-                                              #'json
-                                              #'result
-                                              #'body
-                                              #'on-fail)
+          (compile-validate #'schema1 #'json #'ignored
+                            (compile-validate #'schema2 #'json #'result #'body #'on-fail)
                             #'on-fail)]
          ; TODO handle inner bindings
          [(listof schema)
@@ -377,4 +362,8 @@
               '((1 2 3) (1 2 3)))
   (test-equal? "listof handles inner failure in an 'or'"
                  (validate-json (or (listof number) any) '(1 #t 2))
-                 '(1 #t 2)))
+                 '(1 #t 2))
+  (test-case "recursive  schema"
+    (define-schema rose (listof rose))
+    (check-equal? (validate-json rose '(() (() ()))) '(() (() ())))
+    (check-exn exn:fail:schema? (thunk (validate-json rose '(() () (((1)))))))))
