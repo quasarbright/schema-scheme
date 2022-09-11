@@ -1,6 +1,6 @@
 #lang racket
 
-(module+ test (require rackunit))
+(module+ test (require (rename-in rackunit [fail fail-test])))
 (provide (all-defined-out)
          (for-space schema-scheme (all-defined-out)))
 
@@ -40,14 +40,9 @@
                        (bind v:var s:schema)
                        #:binding (nest-one s {(bind v) tail})
                        (=> s:schema body:expr)
-                       #:binding (nest-one s (host body))
-                       ;#:binding [(nest-one s (host body)) (nest-one s tail)]
-                       ; ^ this caused a failed persistent-free-id-table-ref for some reason.
-                       ; for now, => and 'when' have their own scopes.
-                       ; TODO ask michael about it
+                       #:binding (nest-one s [(host body) tail])
                        (when s:schema guard:expr)
-                       #:binding (nest-one s (host guard))
-                       ;#:binding [(nest-one s (host guard)) (nest-one s tail)]
+                       #:binding (nest-one s [(host guard) tail])
                        (object-has-field name:id s:schema)
                        #:binding (nest-one s tail)
                        (cons car-schema:schema cdr-schema:schema)
@@ -151,7 +146,7 @@
        (syntax-parse #'schema
          #:literal-sets (schema-literals)
          [(bind var:id schema)
-          #:with var^ (compile-binder! #'var)
+          #:with var^ (compile-pattern-binder! #'var)
           (compile-validate #'schema #'json #'result #'(let ([var^ result]) body) #'on-fail)]
          [(when schema guard)
           (compile-validate #'schema #'json #'result
@@ -206,40 +201,42 @@
          ; TODO handle inner bindings
          [(listof schema)
           (define bound-vars-set (get-schema-bound-vars #'schema))
-          (define/syntax-parse (var ...) (set->list bound-vars-set))
-          ; this causes compile-binder! to run twice. once here, once in the compilation
-          ; you can either take in a mapping of binders to their compiled versions
-          ; or return a set of bound ids in addition to the output stx in compile-validate.
-          ; or you could just not expose variables bound in listof.
-          ; or you could make a safe compile-binder!, run this map after compiling the element stuff, and use
-          ; the safe variant here.
-          ; or you could make a pass that just does compile-binder! on everything.
-          ; all options suck
-          (define/syntax-parse (var-bind ...) (stx-map compile-binder! (attribute var)))
-          (define/syntax-parse (var-ref ...) (stx-map compile-reference (attribute var)))
-          (define/syntax-parse (var-list-bind ...) (generate-temporaries (attribute var)))
-          (define/syntax-parse (var-list-ref ...) (generate-temporaries (attribute var)))
           ; just to simulate introduction scopes to be safe
           (with-syntax ([(results) (generate-temporaries (list #'results))]
                         [(element) (generate-temporaries (list #'element))]
                         [(element-result) (generate-temporaries (list #'element-result))])
+
+            (define/syntax-parse (var ...) (set->list bound-vars-set))
+            ; this causes compile-pattern-binder! to run twice. once here, once in the compilation
+            ; you can either take in a mapping of binders to their compiled versions
+            ; or return a set of bound ids in addition to the output stx in compile-validate.
+            ; or you could just not expose variables bound in listof.
+            ; or you could make a safe compile-pattern-binder!, run this map after compiling the element stuff, and use
+            ; the safe variant here.
+            ; or you could make a pass that just does compile-pattern-binder! on everything.
+            ; all options suck
+            (define/syntax-parse (var-bind ...) (stx-map compile-pattern-binder! (attribute var)))
+            (define/syntax-parse (var-ref ...) (stx-map compile-reference (attribute var)))
+            (define/syntax-parse (var-list ...) (generate-temporaries (attribute var)))
+            (define/syntax-parse compiled-element
+              (compile-validate #'schema #'element #'element-result
+                                #'(values (cons element-result results) (cons var-ref var-list) ...)
+                                #'on-fail-k))
             #`(if (list? json)
                   (let/cc k
                     (let ([on-fail-k (λ args (k (apply on-fail args)))])
-                      (let-values ([(results var-bind ...)
-                                    (for/fold ([results '()] [var-list-bind '()] ...)
+                      (let-values ([(results var-list ...)
+                                    (for/fold ([results '()] [var-list '()] ...)
                                               ([element json])
-                                      #,(compile-validate #'schema #'element #'element-result
-                                                          #'(values (cons element-result results) (cons var-ref var-list-ref) ...)
-                                                          #'on-fail-k))])
+                                      compiled-element)])
                         (let ([result (reverse results)]
-                              [var-bind (reverse var-list-ref)]
+                              [var-bind (reverse var-list)]
                               ...)
                           body))))
                   (on-fail (format "expected a list, but got ~v" json))))])]))
 
   ; returns a bound-id-set of all vars bound in the schema according to the scoping rules.
-  ; does not do compile-binder! or compile-reference
+  ; does not do compile-pattern-binder! or compile-reference
   (define (get-schema-bound-vars schema)
     (syntax-parse schema
       #:literal-sets (schema-literals)
@@ -257,7 +254,11 @@
       [(listof schema) (get-schema-bound-vars #'schema)]))
 
   (define (compile-host-expr e)
-    (resume-host-expansion e #:reference-compilers ([var compile-reference]))))
+    (resume-host-expansion e #:reference-compilers ([var compile-reference])))
+
+  (define (compile-pattern-binder! id)
+    ; need to reuse because list-of will compile-binder! at least twice for the same identifier.
+    (compile-binder! id #:reuse? #t)))
 
 (module+ test
   (check-equal? (validate-json any 1) 1)
@@ -362,7 +363,7 @@
                (validate-json (listof (=> (bind x number) (* 2 x)))
                               '(1 2 3))
                '(2 4 6))
-  #;(test-equal? "listof exposes inner bindings"
+  (test-equal? "listof exposes inner bindings"
               (validate-json (=> (listof (bind x any)) (list x x))
                              '(1 2 3))
               '((1 2 3) (1 2 3)))
@@ -382,4 +383,6 @@
                (validate-json (let ([x (=> number 2)] [y (=> number x)])
                                 (list x y))
                               1)
-               '(2 2)))
+               '(2 2))
+
+  (check-exn exn:fail:schema? (thunk (validate-json (fail "foo") 1))))
