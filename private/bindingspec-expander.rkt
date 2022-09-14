@@ -258,6 +258,8 @@
 
   (define (compile-pattern-binder! id)
     ; need to reuse because list-of will compile-binder! at least twice for the same identifier.
+    ; This #:reuse? flag doesn't exist in ee-lib (yet) so it only runs locally.
+    ; https://github.com/michaelballantyne/ee-lib/pull/3
     (compile-binder! id #:reuse? #t)))
 
 (module+ test
